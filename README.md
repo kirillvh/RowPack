@@ -4,6 +4,8 @@
 
 ![Input file size](docs/images/mm_infographic_vqa_input_mib.png)
 
+## Faster than Paraquet with compression as good as its best
+
 RowPack is a row-major dataset container for multimodal training workloads.
 It is built for the pattern VLM training usually wants: sample a random window,
 read a small block of neighboring rows, decode images, tokenize text, and feed
