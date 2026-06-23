@@ -1,0 +1,45 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  release:
+    types:
+      - published
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      matrix:
+        mode: [ Debug, Release ]
+        arch: [ amd64, x86 ]
+
+    env:
+      CXX: cl.exe
+      CC: cl.exe
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install ninja
+        run: choco install ninja
+
+      - name: Build
+        run: |
+          cmake -GNinja -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.mode }} -DCISTA_FMT=OFF
+          cmake --build build --target cista-test cista-test-single-header
+
+      # ==== TESTS ====
+      - name: Run Tests
+        run: .\build\cista-test.exe
+      - name: Run Single Header Tests
+        run: .\build\cista-test-single-header.exe

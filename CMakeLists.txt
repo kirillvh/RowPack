@@ -1,0 +1,51 @@
+cmake_minimum_required(VERSION 3.18)
+project(rowpack LANGUAGES CXX)
+
+option(ROWPACK_BUILD_PYTHON "Build the rowpack_native nanobind module" ON)
+set(ROWPACK_NANOBIND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nanobind" CACHE PATH "Path to a nanobind checkout")
+set(ROWPACK_CISTA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cista/include" CACHE PATH "Optional path to cista/include")
+set(ROWPACK_QOI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qoi" CACHE PATH "Optional path to qoi.h")
+set(ROWPACK_STB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb" CACHE PATH "Optional path to stb_image.h/stb_image_write.h")
+set(ROWPACK_LZAV_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lzav" CACHE PATH "Optional path to lzav.h")
+
+add_library(rowpack_headers INTERFACE)
+target_include_directories(rowpack_headers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(rowpack_headers INTERFACE cxx_std_20)
+
+if(ROWPACK_CISTA_INCLUDE_DIR)
+  target_compile_definitions(rowpack_headers INTERFACE ROWPACK_USE_CISTA)
+  target_include_directories(rowpack_headers INTERFACE ${ROWPACK_CISTA_INCLUDE_DIR})
+endif()
+
+if(ROWPACK_QOI_INCLUDE_DIR)
+  target_compile_definitions(rowpack_headers INTERFACE ROWPACK_USE_QOI)
+  target_include_directories(rowpack_headers INTERFACE ${ROWPACK_QOI_INCLUDE_DIR})
+endif()
+
+if(ROWPACK_STB_INCLUDE_DIR)
+  target_compile_definitions(rowpack_headers INTERFACE ROWPACK_USE_STB)
+  target_include_directories(rowpack_headers INTERFACE ${ROWPACK_STB_INCLUDE_DIR})
+endif()
+
+if(ROWPACK_LZAV_INCLUDE_DIR)
+  target_compile_definitions(rowpack_headers INTERFACE ROWPACK_USE_LZAV)
+  target_include_directories(rowpack_headers INTERFACE ${ROWPACK_LZAV_INCLUDE_DIR})
+endif()
+
+if(ROWPACK_BUILD_PYTHON)
+  set(Python_FIND_VIRTUALENV FIRST)
+  set(Python_FIND_STRATEGY LOCATION)
+  set(Python_FIND_UNVERSIONED_NAMES FIRST)
+  set(Python_FIND_REGISTRY LAST)
+  set(Python_FIND_FRAMEWORK LAST)
+  find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
+
+  if(ROWPACK_NANOBIND_DIR)
+    add_subdirectory(${ROWPACK_NANOBIND_DIR} nanobind)
+  else()
+    find_package(nanobind CONFIG REQUIRED)
+  endif()
+
+  nanobind_add_module(rowpack_native src/rowpack_nanobind.cpp)
+  target_link_libraries(rowpack_native PRIVATE rowpack_headers)
+endif()
