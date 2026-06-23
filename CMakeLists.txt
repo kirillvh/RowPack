@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.18)
 project(rowpack LANGUAGES CXX)
 
 option(ROWPACK_BUILD_PYTHON "Build the rowpack_native nanobind module" ON)
+option(ROWPACK_BUILD_EXAMPLES "Build RowPack C++ examples" OFF)
 set(ROWPACK_NANOBIND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nanobind" CACHE PATH "Path to a nanobind checkout")
 set(ROWPACK_CISTA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cista/include" CACHE PATH "Optional path to cista/include")
 set(ROWPACK_QOI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qoi" CACHE PATH "Optional path to qoi.h")
@@ -48,4 +49,9 @@ if(ROWPACK_BUILD_PYTHON)
 
   nanobind_add_module(rowpack_native src/rowpack_nanobind.cpp)
   target_link_libraries(rowpack_native PRIVATE rowpack_headers)
+endif()
+
+if(ROWPACK_BUILD_EXAMPLES)
+  add_executable(rowpack_cpp_writer_smoke examples/cpp_writer_smoke.cpp)
+  target_link_libraries(rowpack_cpp_writer_smoke PRIVATE rowpack_headers)
 endif()

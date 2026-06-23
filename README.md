@@ -41,7 +41,7 @@ The native build is self-contained under `rowpack/third_party`:
 - `nanobind` for Python bindings
 - `cista` for cast-mode payload serialization
 - `lzav` for block compression
-- `stb` for JPEG/PNG/etc. image decoding
+- `stb` for JPEG/PNG/etc. image decoding and JPEG writing
 - `qoi` for QOI lossless image payload experiments
 
 ## Build
@@ -79,6 +79,13 @@ Then pass the build output directory to converter and benchmark commands:
 You can also set `ROWPACK_NATIVE_DIR=rowpack_build_py/Release`. Most RowPack
 Python APIs will discover the native module from that environment variable or
 from common local build directories.
+
+To build the C++ smoke example too:
+
+```bash
+cmake -S rowpack -B rowpack_build_py -DROWPACK_BUILD_EXAMPLES=ON
+cmake --build rowpack_build_py --config Release
+```
 
 ## Convert Parquet To RowPack
 
@@ -124,6 +131,143 @@ That decodes the source image once during conversion, stores QOI, and returns
 packed RGB through the native direct-VQA path. Use this mainly when the source
 images are lossless: RowPack re-encodes the decoded image losslessly using QOI,
 which has PNG-like compression behavior but is much faster to encode/decode.
+
+## Create RowPack Directly
+
+RowPack can also be used as the dataset recording format. This is the path for
+robots, simulators, data generation jobs, or any process that wants to append
+rows online instead of converting from Parquet after the fact.
+
+```python
+from rowpack import MetadataBuilder, RowPackDatasetBuilder
+
+metadata = (
+    MetadataBuilder()
+    .dataset_name("robot_run_042")
+    .description("Synchronized camera and IMU capture")
+    .row_field("timestamp_ns", "int64", "Synchronized row timestamp")
+    .sensor("front_camera", "rgb8", topic="/camera/front", frame_id="camera")
+    .sensor("imu", "sensor_msgs.msg:Imu", topic="/imu")
+    .calibration("front_camera", fx=620.0, fy=620.0, cx=320.0, cy=240.0)
+    .compression(block_codec="lzav_hi", rows_per_block=32)
+    .image_codec("jpeg_lossy", jpeg_quality=90)
+)
+
+with RowPackDatasetBuilder(
+    "robot_run_042.rowpack",
+    metadata=metadata,
+    rows_per_block=32,
+    block_codec="lzav_hi",
+    image_codec="jpeg_lossy",
+    overwrite=True,
+) as dataset:
+    dataset.append_sensor_row(
+        {"imu": {"angular_velocity": [0.0, 0.1, 0.0]}},
+        images=[raw_rgb_bytes],
+        timestamp_ns=123456789,
+        name="frame_000000",
+    )
+```
+
+`RowPackDatasetBuilder` defaults to `payload_format="cista"` and
+`block_codec="lzav_hi"`. That means rows are serialized into compact native
+payloads, then 32-row windows are compressed together by default. If you want a
+debuggable file first, use `payload_format="json"` and `block_codec="none"`.
+
+Image options:
+
+- `encoded`: store source JPEG/PNG/WebP bytes as-is. Best when your source is
+  already compressed.
+- `raw_rgb`: store packed uint8 pixels with shape metadata.
+- `qoi_lossless`: store raw RGB/RGBA pixels through QOI. Best for lossless
+  source images when fast decode matters.
+- `jpeg_lossy`: encode raw pixels through native STB JPEG writing. Best for
+  camera streams where a small visual loss is acceptable.
+
+## C++ Authoring
+
+The C++ writer is header-only and mirrors the Python writer: rows accumulate in
+a pending block, the block is optionally LZAV-compressed, and indexes plus
+metadata are written when `finish()` is called.
+
+```cpp
+#define ROWPACK_IMAGE_CODECS_IMPLEMENTATION
+#include <rowpack/image_codecs.hpp>
+
+auto metadata = rowpack::MetadataBuilder{}
+    .dataset_name("robot_run_042")
+    .add_sensor("front_camera", "rgb8", "Forward camera",
+                "{\"topic\":\"/camera/front\"}")
+    .set_compression_settings("lzav_hi", 32)
+    .set_image_codec_settings("jpeg_lossy", "{\"quality\":90}");
+
+rowpack::WriterOptions options;
+options.rows_per_block = 32;
+options.block_codec = rowpack::codec_id("lzav_hi");
+options.payload_format = "cista";
+options.metadata_json = metadata.to_json();
+options.overwrite = true;
+
+rowpack::Writer writer{"robot_run_042.rowpack", options};
+
+rowpack::cast_payload::Row row;
+row.row_id = 0;
+row.extra_json = "{\"timestamp_ns\":123456789}";
+row.images.push_back(rowpack::image_codecs::make_jpeg_image(
+    raw_rgb_bytes, height, width, 3, 90));
+
+writer.append_cista_row(row, "frame_000000");
+writer.finish();
+```
+
+Use `rowpack/include/rowpack/rowpack.hpp` for the reader/writer and
+`rowpack/include/rowpack/image_codecs.hpp` when you want QOI or STB JPEG
+helpers from C++. Define `ROWPACK_IMAGE_CODECS_IMPLEMENTATION` in exactly one
+`.cpp` file that uses those codec helpers.
+
+## ROS2 Capture
+
+`rowpack.ros2_capture` records synchronized ROS2 topic groups into RowPack. It
+does not require ROS2 to import RowPack; it only imports `rclpy` when the
+capture command runs.
+
+Example `capture_config.json`:
+
+```json
+{
+  "output": "robot_run_042.rowpack",
+  "overwrite": true,
+  "rows_per_block": 32,
+  "block_codec": "lzav_hi",
+  "image_codec": "jpeg_lossy",
+  "jpeg_quality": 90,
+  "sync": {"slop_s": 0.02},
+  "topics": [
+    {
+      "name": "/camera/front",
+      "type": "sensor_msgs.msg:Image",
+      "field": "front_camera",
+      "role": "image"
+    },
+    {
+      "name": "/imu",
+      "type": "sensor_msgs.msg:Imu",
+      "field": "imu",
+      "role": "json"
+    }
+  ]
+}
+```
+
+Run it on a ROS2 machine:
+
+```bash
+python -m rowpack.ros2_capture capture_config.json
+```
+
+The first implementation assumes topic timestamps are already synchronized
+within `sync.slop_s`. When all configured topics have arrived, it writes one
+row containing JSON-compatible sensor values and any image payloads.
 
 ## Read From Python
 

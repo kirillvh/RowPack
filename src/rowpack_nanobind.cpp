@@ -21,6 +21,9 @@
 #define STBI_NO_STDIO
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define STBI_WRITE_NO_STDIO
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 #endif
 
 namespace nb = nanobind;
@@ -185,6 +188,34 @@ bool stb_decode_to_raw_dict(std::uint8_t const* data, std::size_t size, nb::dict
                      static_cast<std::uint32_t>(width));
   stbi_image_free(decoded);
   return true;
+}
+
+void stb_write_to_string(void* context, void* data, int size) {
+  auto* out = static_cast<std::string*>(context);
+  out->append(static_cast<char const*>(data), static_cast<std::size_t>(size));
+}
+
+nb::bytes jpeg_encode_rgb_bytes(nb::bytes payload, std::uint32_t height, std::uint32_t width, std::uint32_t channels,
+                                int quality) {
+  auto const bytes = bytes_string(payload);
+  if (height == 0 || width == 0 || (channels != 1 && channels != 3 && channels != 4)) {
+    throw std::runtime_error("JPEG encode requires nonzero width/height and 1, 3, or 4 channels");
+  }
+  auto const expected = static_cast<std::size_t>(height) * static_cast<std::size_t>(width) * channels;
+  if (bytes.size() != expected) {
+    throw std::runtime_error("JPEG encode input byte length does not match height*width*channels");
+  }
+  if (quality < 1 || quality > 100) {
+    throw std::runtime_error("JPEG quality must be in [1, 100]");
+  }
+
+  std::string out;
+  auto ok = stbi_write_jpg_to_func(stb_write_to_string, &out, static_cast<int>(width), static_cast<int>(height),
+                                   static_cast<int>(channels), bytes.data(), quality);
+  if (ok == 0) {
+    throw std::runtime_error("stbi_write_jpg_to_func failed");
+  }
+  return nb::bytes(out.data(), out.size());
 }
 #endif
 
@@ -372,5 +403,8 @@ NB_MODULE(rowpack_native, m) {
 #ifdef ROWPACK_USE_LZAV
   m.def("lzav_compress", &lzav_compress_bytes);
   m.def("lzav_decompress", &lzav_decompress_bytes);
+#endif
+#if defined(ROWPACK_USE_STB) && defined(ROWPACK_USE_CISTA)
+  m.def("jpeg_encode_rgb", &jpeg_encode_rgb_bytes);
 #endif
 }
