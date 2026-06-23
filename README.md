@@ -16,16 +16,18 @@ RowPack aims at a different hot path: training-time row/window access.
 
 ## Why It Is Useful
 
-- Row-major blocks match random-block training access better than column-major
-  files.
-- CISTA cast-mode payloads avoid rebuilding large Python dictionaries on the
-  fast path.
-- LZAV block compression gives good size reduction with very fast decompression.
-- Native STB image decode can return packed RGB buffers directly to Python.
-- QOI lossless image storage is available for image-source experiments where
-  lossless decoded RGB storage is useful.
+- Row-major layout enables speed by matching random-access(shuffle) training better than column-major
+  format of Paraquet
+- Header-Only C++ with Python Bindings and PyTorch dataloader ease integration.
+- Utilities to easily convert Paraquet dataset to RowPack
+- Modern libraries for speed and utility
+    - [nanobind](https://github.com/wjakob/nanobind) for 10x faster Python binding than pybind11.
+    - [CISTA](https://github.com/felixguendling/cista) cast-mode payloads avoid rebuilding large Python dictionaries.
+    - [LZAV](https://github.com/avaneev/lzav) block compression gives good size reduction with very fast decompression.
+    - [QOI](https://github.com/phoboslab/qoi) for fast lossless image decoding and storage.
+    - Native STB image decode for low size lossy image decoding.
 - The Python loader can hand back ready-to-shape byte buffers, so users can go
-  straight to `np.frombuffer(...).reshape(h, w, c)` or a tensor conversion.
+  straight to using their tensor with `np.frombuffer(...).reshape(h, w, c)`, or let the [PyTorch Dataloader](torch_dataset.py) take care of everything.
 
 In the current `mm_infographic_vqa` random-block benchmark, RowPack with LZAV
 high-ratio blocks compresses close to Parquet GZIP/Brotli size while keeping
