@@ -1,5 +1,9 @@
 # RowPack
 
+![Training throughput](docs/images/mm_infographic_vqa_samples_per_s.png)
+
+![Input file size](docs/images/mm_infographic_vqa_input_mib.png)
+
 RowPack is a row-major dataset container for multimodal training workloads.
 It is built for the pattern VLM training usually wants: sample a random window,
 read a small block of neighboring rows, decode images, tokenize text, and feed
@@ -198,9 +202,15 @@ Example results on `nimapourjafar/mm_infographic_vqa`, using random-block
 access, 32-row windows, 8,192 reproducibly sampled rows, 100 warmup steps, and
 1,000 measured CPU training-loop steps:
 
-![Training throughput](docs/images/mm_infographic_vqa_samples_per_s.png)
-
-![Input file size](docs/images/mm_infographic_vqa_input_mib.png)
+| variant | size | samples/s | data wait |
+| --- | ---: | ---: | ---: |
+| parquet_uncompressed | 286.33 MiB | 22.99 | 27.65 ms |
+| parquet_zstd | 262.27 MiB | 22.47 | 28.65 ms |
+| parquet_gzip | 258.02 MiB | 14.28 | 54.10 ms |
+| parquet_brotli | 258.37 MiB | 13.46 | 58.36 ms |
+| rowpack_none | 287.59 MiB | 24.13 | 25.18 ms |
+| rowpack_lzav_default | 266.04 MiB | 23.89 | 25.67 ms |
+| rowpack_lzav_hi | 259.03 MiB | 23.88 | 25.65 ms |
 
 ![Mean data wait](docs/images/mm_infographic_vqa_data_wait_ms.png)
 
