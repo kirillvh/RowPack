@@ -4,7 +4,7 @@
 
 ![Input file size](docs/images/mm_infographic_vqa_input_mib.png)
 
-## Faster than Paraquet with compression as good as its best
+## Faster than Parquet with compression as good as its best
 
 RowPack is a row-major dataset container for multimodal training workloads.
 It is built for the pattern VLM training usually wants: sample a random window,
@@ -16,102 +16,106 @@ RowPack aims at a different hot path: training-time row/window access.
 
 ## Why It Is Useful
 
-- Row-major layout enables speed by matching random-access(shuffle) training better than column-major
-  format of Paraquet
-- Header-Only C++ with Python Bindings and PyTorch dataloader ease integration.
-- Utilities to easily convert Paraquet dataset to RowPack
-- Modern libraries for speed and utility
-    - [nanobind](https://github.com/wjakob/nanobind) for 10x faster Python binding than pybind11.
-    - [CISTA](https://github.com/felixguendling/cista) cast-mode payloads avoid rebuilding large Python dictionaries.
-    - [LZAV](https://github.com/avaneev/lzav) block compression gives good size reduction with very fast decompression.
-    - [QOI](https://github.com/phoboslab/qoi) for fast lossless image decoding and storage.
-    - Native STB image decode for low size lossy image decoding.
+- Row-major layout enables speed by matching random-access shuffle training better than column-major
+  Parquet files.
+- Header-only C++ with Python bindings and PyTorch dataloader integration.
+- Examples and writer APIs for recording new datasets or converting existing ones to RowPack.
+- Modern libraries for speed and utility:
+  - [nanobind](https://github.com/wjakob/nanobind)[[BSD3]] for fast Python bindings.
+  - [CISTA](https://github.com/felixguendling/cista)[[MIT]] cast-mode payloads avoid rebuilding large Python dictionaries.
+  - [LZAV](https://github.com/avaneev/lzav)[[MIT]] block compression gives good size reduction with very fast decompression.
+  - [QOI](https://github.com/phoboslab/qoi)[[MIT]] for fast lossless image decoding and storage.
+  - [STB](https://github.com/nothings/stb)[[MIT]] image decode and JPEG writing.
 - The Python loader can hand back ready-to-shape byte buffers, so users can go
-  straight to using their tensor with `np.frombuffer(...).reshape(h, w, c)`, or let the [PyTorch Dataloader](torch_dataset.py) take care of everything.
+  straight to `np.frombuffer(...).reshape(h, w, c)`, or let the
+  [PyTorch dataloader](torch_dataset.py) take care of batching.
 
 In the current `mm_infographic_vqa` random-block benchmark, RowPack with LZAV
 high-ratio blocks compresses close to Parquet GZIP/Brotli size while keeping
 throughput near the uncompressed row-major baseline and well ahead of the
 slower Parquet codecs.
 
-## Batteries Included
+## Portable and Self Contained
 
-The native build is self-contained under `rowpack/third_party`:
-
-- `nanobind` for Python bindings
-- `cista` for cast-mode payload serialization
-- `lzav` for block compression
-- `stb` for JPEG/PNG/etc. image decoding and JPEG writing
-- `qoi` for QOI lossless image payload experiments
+The native build is self-contained under `third_party/`, and the C++ writer is
+header-only for easy embedding. The bundled dependencies and this repository
+are permissively licensed.
 
 ## Build
 
-If this directory is the repository root:
+From the repository root:
 
 ```bash
 cmake -S . -B build
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-From a parent checkout that contains the `rowpack/` directory:
+That builds the `rowpack_native` Python extension, builds the C++ example, and
+runs the C++/Python smoke tests. Advanced layouts, including parent-directory
+builds and explicit Python interpreter selection, are covered in
+[docs/build-details.md](docs/build-details.md).
+
+## Quick Examples
+
+Create and read a tiny RowPack file with these verbose examples read further down for deeper explanation if interested.:
 
 ```bash
-cmake -S rowpack -B rowpack_build_py
-cmake --build rowpack_build_py --config Release
+python3 examples/create_rowpack_direct.py --output build/examples/robot_demo.rowpack
+python3 examples/read_rowpack.py --input build/examples/robot_demo.rowpack
 ```
 
-CMake uses its normal `FindPython` flow and is configured to prefer the active
-virtualenv or PATH Python. Check the `Found Python:` line during configure; the
-native module is Python-version-specific. If CMake picks a different Python
-than the one that will run your training code, point it at the one you want:
+Add LZAV compression and CISTA format for speed.
 
 ```bash
-cmake -S rowpack -B rowpack_build_py -DPython_EXECUTABLE=<python-executable>
-cmake --build rowpack_build_py --config Release
+python3 examples/create_rowpack_direct.py \
+  --output build/examples/robot_demo_native.rowpack \
+  --payload-format cista \
+  --block-codec lzav_hi \
+  --native-module-dir build
 ```
 
-Then pass the build output directory to converter and benchmark commands:
+Record dataset from ROS topics:
 
 ```bash
---rowpack-native-dir rowpack_build_py/Release
-```
-
-You can also set `ROWPACK_NATIVE_DIR=rowpack_build_py/Release`. Most RowPack
-Python APIs will discover the native module from that environment variable or
-from common local build directories.
-
-To build the C++ smoke example too:
-
-```bash
-cmake -S rowpack -B rowpack_build_py -DROWPACK_BUILD_EXAMPLES=ON
-cmake --build rowpack_build_py --config Release
+python3 -m rowpack.ros2_capture --config examples/capture_config.json
 ```
 
 ## Convert Parquet To RowPack
 
-Recommended first conversion for a JPEG/JFIF-heavy VLM dataset:
+RowPack includes a generic Parquet converter. It streams Parquet batches,
+turns each Parquet row into one RowPack row, and preserves ordinary columns as
+JSON-compatible fields. Columns named `image`, `images`, `img`, or `imgs` are
+treated as image payloads automatically; for other schemas, pass
+`--image-column`.
 
 ```bash
-python benchmarks/prepare_mm_infographic_vqa_rowpack.py \
-  --data-files data/variants/mm_infographic_vqa/uncompressed.parquet \
-  --output-dir data/variants/mm_infographic_vqa_rowpack \
-  --variant-name rowpack_cista_lzav_hi \
-  --rows-per-block 32 \
+python3 -m rowpack.convert_parquet \
+  --input data/train.parquet \
+  --output build/datasets/train.rowpack \
   --payload-format cista \
-  --image-storage encoded \
   --block-codec lzav_hi \
-  --rowpack-native-dir rowpack_build_py/Release \
+  --native-module-dir build \
+  --image-column image \
+  --name-column id \
   --overwrite
 ```
 
-Those defaults mean:
+The converter requires `pyarrow`:
+
+```bash
+python3 -m pip install pyarrow
+```
+
+Useful options:
 
 - `payload-format cista`: choose how each row is serialized inside RowPack.
   `json` is easy to inspect and useful for debugging. `cista` is the fast path:
   it stores typed native payloads that the C++ extension can read directly,
   avoiding a lot of Python object reconstruction during training.
-- `image-storage encoded`: keep the source JPEG/PNG/WebP bytes instead of
-  expanding images inside the file.
+- `image-column image`: move this Parquet column into RowPack's `images`
+  payload list. Hugging Face-style image structs such as `{bytes, path}` work,
+  as do raw encoded bytes. Repeat the option for multiple image columns.
 - `block-codec lzav_hi`: choose block compression. Options are `none`,
   `lzav_default`, and `lzav_hi`. `none` is the pure layout baseline,
   `lzav_default` favors faster conversion, and `lzav_hi` spends more time while
@@ -120,17 +124,17 @@ Those defaults mean:
   decompression during training.
 - `rows-per-block 32`: compresses 32 rows into one block, a good default to
   balance compression ratio with shuffled random-window read performance.
+- `name-column id`: use a stable Parquet column as the RowPack row name, so
+  rows can be addressed by name later.
+- `columns` and `drop-column`: limit which Parquet columns are read or stored.
+  Non-image binary columns are preserved as base64 JSON wrappers so generic
+  conversion does not silently throw bytes away.
 
-For lossless image-codec experiments, use:
+The direct authoring example in [examples/create_rowpack_direct.py](examples/create_rowpack_direct.py)
+uses the same writer API a Parquet converter would use.
 
-```bash
---image-storage qoi_lossless
-```
-
-That decodes the source image once during conversion, stores QOI, and returns
-packed RGB through the native direct-VQA path. Use this mainly when the source
-images are lossless: RowPack re-encodes the decoded image losslessly using QOI,
-which has PNG-like compression behavior but is much faster to encode/decode.
+For fully custom image handling, use `RowPackDatasetBuilder` directly. That is
+where modes such as `raw_rgb`, `qoi_lossless`, and `jpeg_lossy` are available.
 
 ## Create RowPack Directly
 
@@ -138,37 +142,11 @@ RowPack can also be used as the dataset recording format. This is the path for
 robots, simulators, data generation jobs, or any process that wants to append
 rows online instead of converting from Parquet after the fact.
 
-```python
-from rowpack import MetadataBuilder, RowPackDatasetBuilder
-
-metadata = (
-    MetadataBuilder()
-    .dataset_name("robot_run_042")
-    .description("Synchronized camera and IMU capture")
-    .row_field("timestamp_ns", "int64", "Synchronized row timestamp")
-    .sensor("front_camera", "rgb8", topic="/camera/front", frame_id="camera")
-    .sensor("imu", "sensor_msgs.msg:Imu", topic="/imu")
-    .calibration("front_camera", fx=620.0, fy=620.0, cx=320.0, cy=240.0)
-    .compression(block_codec="lzav_hi", rows_per_block=32)
-    .image_codec("jpeg_lossy", jpeg_quality=90)
-)
-
-with RowPackDatasetBuilder(
-    "robot_run_042.rowpack",
-    metadata=metadata,
-    rows_per_block=32,
-    block_codec="lzav_hi",
-    image_codec="jpeg_lossy",
-    overwrite=True,
-) as dataset:
-    dataset.append_sensor_row(
-        {"imu": {"angular_velocity": [0.0, 0.1, 0.0]}},
-        images=[raw_rgb_bytes],
-        timestamp_ns=123456789,
-        name="frame_000000",
-    )
+```bash
+python3 examples/create_rowpack_direct.py --output build/examples/robot_demo.rowpack
 ```
 
+The runnable source is [examples/create_rowpack_direct.py](examples/create_rowpack_direct.py).
 `RowPackDatasetBuilder` defaults to `payload_format="cista"` and
 `block_codec="lzav_hi"`. That means rows are serialized into compact native
 payloads, then 32-row windows are compressed together by default. If you want a
@@ -190,38 +168,18 @@ The C++ writer is header-only and mirrors the Python writer: rows accumulate in
 a pending block, the block is optionally LZAV-compressed, and indexes plus
 metadata are written when `finish()` is called.
 
-```cpp
-#define ROWPACK_IMAGE_CODECS_IMPLEMENTATION
-#include <rowpack/image_codecs.hpp>
+The example is [examples/cpp_writer_smoke.cpp](examples/cpp_writer_smoke.cpp)
+and is built by default:
 
-auto metadata = rowpack::MetadataBuilder{}
-    .dataset_name("robot_run_042")
-    .add_sensor("front_camera", "rgb8", "Forward camera",
-                "{\"topic\":\"/camera/front\"}")
-    .set_compression_settings("lzav_hi", 32)
-    .set_image_codec_settings("jpeg_lossy", "{\"quality\":90}");
-
-rowpack::WriterOptions options;
-options.rows_per_block = 32;
-options.block_codec = rowpack::codec_id("lzav_hi");
-options.payload_format = "cista";
-options.metadata_json = metadata.to_json();
-options.overwrite = true;
-
-rowpack::Writer writer{"robot_run_042.rowpack", options};
-
-rowpack::cast_payload::Row row;
-row.row_id = 0;
-row.extra_json = "{\"timestamp_ns\":123456789}";
-row.images.push_back(rowpack::image_codecs::make_jpeg_image(
-    raw_rgb_bytes, height, width, 3, 90));
-
-writer.append_cista_row(row, "frame_000000");
-writer.finish();
+```bash
+./build/rowpack_cpp_writer_smoke --output build/examples/cpp_writer_smoke.rowpack
 ```
 
-Use `rowpack/include/rowpack/rowpack.hpp` for the reader/writer and
-`rowpack/include/rowpack/image_codecs.hpp` when you want QOI or STB JPEG
+It writes one CISTA row with a JPEG image, reopens the file, and prints the
+same kind of summary as the Python examples.
+
+Use [include/rowpack/rowpack.hpp](include/rowpack/rowpack.hpp) for the reader/writer and
+[include/rowpack/image_codecs.hpp](include/rowpack/image_codecs.hpp) when you want QOI or STB JPEG
 helpers from C++. Define `ROWPACK_IMAGE_CODECS_IMPLEMENTATION` in exactly one
 `.cpp` file that uses those codec helpers.
 
@@ -231,38 +189,11 @@ helpers from C++. Define `ROWPACK_IMAGE_CODECS_IMPLEMENTATION` in exactly one
 does not require ROS2 to import RowPack; it only imports `rclpy` when the
 capture command runs.
 
-Example `capture_config.json`:
-
-```json
-{
-  "output": "robot_run_042.rowpack",
-  "overwrite": true,
-  "rows_per_block": 32,
-  "block_codec": "lzav_hi",
-  "image_codec": "jpeg_lossy",
-  "jpeg_quality": 90,
-  "sync": {"slop_s": 0.02},
-  "topics": [
-    {
-      "name": "/camera/front",
-      "type": "sensor_msgs.msg:Image",
-      "field": "front_camera",
-      "role": "image"
-    },
-    {
-      "name": "/imu",
-      "type": "sensor_msgs.msg:Imu",
-      "field": "imu",
-      "role": "json"
-    }
-  ]
-}
-```
-
-Run it on a ROS2 machine:
+Edit [examples/capture_config.json](examples/capture_config.json) for your
+topics, then run it on a ROS2 machine:
 
 ```bash
-python -m rowpack.ros2_capture capture_config.json
+python3 -m rowpack.ros2_capture --config examples/capture_config.json
 ```
 
 The first implementation assumes topic timestamps are already synchronized
@@ -271,13 +202,10 @@ row containing JSON-compatible sensor values and any image payloads.
 
 ## Read From Python
 
-Generic row reconstruction:
+Generic row reconstruction is shown in [examples/read_rowpack.py](examples/read_rowpack.py):
 
-```python
-from rowpack import RowPackReader
-
-with RowPackReader("data/variants/mm_infographic_vqa_rowpack/rowpack_cista_lzav_hi.rowpack") as reader:
-    row = reader.read_row(0)
+```bash
+python3 examples/read_rowpack.py --input build/examples/robot_demo.rowpack
 ```
 
 PyTorch list-file loader:
@@ -326,25 +254,22 @@ for row_id, text_pairs, images in rows:
 
 ## Benchmark
 
+The benchmark scripts used to generate the published `mm_infographic_vqa`
+charts are part of a sister repository used to demonstrate rowpack usage in a VLA,
+and it will be published soon. 
+However this repository includes a simplified RowPack-only benchmark as follows:
+
 ```bash
-python benchmarks/run_mm_infographic_vqa_parquet_suite.py \
-  --manifest data/variants/mm_infographic_vqa_rowpack/manifest.json \
-  --loader rowpack \
-  --rowpack-native-dir rowpack_build_py/Release \
-  --read-pattern random_block \
-  --read-block-size 32 \
-  --steps 20 \
-  --warmup-steps 2 \
-  --max-rows 256 \
-  --batch-size 1 \
-  --num-workers 0 \
-  --sequence-length 128 \
-  --image-size 32 \
-  --output-dir results/mm_infographic_vqa_rowpack
+python3 examples/quick_benchmark.py \
+  --payload-format cista \
+  --block-codec lzav_hi \
+  --native-module-dir build
 ```
 
-The benchmark writes Markdown/CSV summaries and chart PNGs under the output
-directory.
+That synthetic check writes and reads RowPack data only. It does not load
+Parquet, convert Parquet, or compare against Parquet. It is useful for
+confirming that the code and native module are working before you run a real
+dataset comparison.
 
 Example results on `nimapourjafar/mm_infographic_vqa`, using random-block
 access, 32-row windows, 8,192 reproducibly sampled rows, 100 warmup steps, and
@@ -373,7 +298,7 @@ data/variants/mm_infographic_vqa_rowpack/rowpack_cista_lzav_hi.rowpack
 Then point `train.py` at that list:
 
 ```bash
-python train.py \
+python3 train.py \
   --rowpack_list data/variants/mm_infographic_vqa_rowpack/rowpacks.txt \
   --rowpack_read_mode shuffle \
   --rowpack_seed 123 \
@@ -386,7 +311,7 @@ For a quick CPU-only integration check without downloading pretrained
 backbones:
 
 ```bash
-python train.py \
+python3 train.py \
   --rowpack_list data/variants/mm_infographic_vqa_rowpack/rowpacks.txt \
   --rowpack_read_mode shuffle \
   --rowpack_seed 123 \
@@ -401,23 +326,3 @@ python train.py \
   --no_lmms_eval \
   --tiny_debug_model
 ```
-
-The production path uses the same RowPack loader; omit `--tiny_debug_model` to
-train the configured nanoVLM model.
-
-## Current Format Notes
-
-The v0 block index stores:
-
-- start row and row count
-- file offset
-- compressed size
-- uncompressed size
-- codec id
-
-For uncompressed blocks, row offsets are absolute file offsets for backward
-compatibility. For compressed blocks, row offsets are relative to the
-decompressed block.
-
-Planned additions include checksums, append/update utilities, a dedicated JPEG
-writer path, and more image-specific storage modes.

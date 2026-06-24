@@ -1,0 +1,23 @@
+{
+  "output": "robot_demo.rowpack",
+  "overwrite": true,
+  "rows_per_block": 32,
+  "block_codec": "lzav_hi",
+  "image_codec": "jpeg_lossy",
+  "jpeg_quality": 90,
+  "sync": {"slop_s": 0.02},
+  "topics": [
+    {
+      "name": "/camera/front",
+      "type": "sensor_msgs.msg:Image",
+      "field": "front_camera",
+      "role": "image"
+    },
+    {
+      "name": "/imu",
+      "type": "sensor_msgs.msg:Imu",
+      "field": "imu",
+      "role": "json"
+    }
+  ]
+}

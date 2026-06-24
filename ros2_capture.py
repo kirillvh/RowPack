@@ -3,12 +3,19 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .authoring import MetadataBuilder, RowPackDatasetBuilder
+if __package__ in {None, ""}:
+    source_root = str(Path(__file__).resolve().parent)
+    if source_root not in sys.path:
+        sys.path.insert(0, source_root)
+    from rowpack.authoring import MetadataBuilder, RowPackDatasetBuilder
+else:
+    from .authoring import MetadataBuilder, RowPackDatasetBuilder
 
 
 @dataclass(frozen=True)
@@ -23,9 +30,15 @@ class TopicConfig:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Record synchronized ROS2 sensor rows into a RowPack dataset.")
-    parser.add_argument("config", help="JSON capture config")
+    parser.add_argument("config", nargs="?", help="JSON capture config")
+    parser.add_argument("--config", dest="config_path", help="JSON capture config")
     args = parser.parse_args(argv)
-    config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+
+    selected_config = args.config_path or args.config
+    if selected_config is None:
+        parser.error("provide a JSON capture config with --config or as a positional argument")
+
+    config = json.loads(Path(selected_config).read_text(encoding="utf-8"))
     return run_capture(config)
 
 

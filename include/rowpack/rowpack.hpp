@@ -628,7 +628,25 @@ class Writer {
     return out;
   }
 
+  [[nodiscard]] std::uint64_t block_payload_bytes() const {
+    std::uint64_t total = 0;
+    for (auto const& block : blocks_) {
+      total += block.size;
+    }
+    return total;
+  }
+
+  [[nodiscard]] std::uint64_t block_uncompressed_bytes() const {
+    std::uint64_t total = 0;
+    for (auto const& block : blocks_) {
+      total += block.uncompressed_size;
+    }
+    return total;
+  }
+
   [[nodiscard]] std::string build_metadata_json() const {
+    auto const payload_bytes = block_payload_bytes();
+    auto const uncompressed_bytes = block_uncompressed_bytes();
     std::ostringstream out;
     out << "{\"format\":\"RowPack\""
         << ",\"format_version\":\"0.1\""
@@ -636,6 +654,15 @@ class Writer {
         << ",\"compression\":" << json_quote(codec_name(options_.block_codec))
         << ",\"block_codec\":" << json_quote(codec_name(options_.block_codec))
         << ",\"observed_compressions\":" << observed_compressions_json()
+        << ",\"block_payload_bytes\":" << payload_bytes
+        << ",\"block_uncompressed_bytes\":" << uncompressed_bytes
+        << ",\"block_compression_ratio\":";
+    if (uncompressed_bytes == 0) {
+      out << "null";
+    } else {
+      out << (static_cast<double>(payload_bytes) / static_cast<double>(uncompressed_bytes));
+    }
+    out
         << ",\"payload_format\":" << json_quote(options_.payload_format)
         << ",\"rows_per_block\":" << options_.rows_per_block
         << ",\"row_count\":" << row_index_.size()
@@ -710,6 +737,7 @@ class Reader {
   [[nodiscard]] std::uint64_t row_count() const { return header_.row_count; }
   [[nodiscard]] std::uint64_t block_count() const { return header_.block_count; }
   [[nodiscard]] std::string const& metadata_json() const { return metadata_; }
+  [[nodiscard]] std::vector<BlockIndexEntry> const& blocks() const { return blocks_; }
 
   [[nodiscard]] std::vector<std::uint8_t> read_row_bytes(std::uint64_t row) {
     require(row < rows_.size(), "RowPack row index out of range");

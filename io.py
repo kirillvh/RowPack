@@ -144,6 +144,8 @@ class RowPackWriter:
         self._flush_block()
         metadata_offset = self._file.tell()
         observed_compressions = sorted({CODEC_NAMES[block.codec] for block in self.blocks})
+        block_payload_bytes = sum(block.size for block in self.blocks)
+        block_uncompressed_bytes = sum(block.uncompressed_size for block in self.blocks)
         metadata = {
             "format": "RowPack",
             "format_version": "0.1",
@@ -151,6 +153,9 @@ class RowPackWriter:
             "compression": self.block_codec,
             "block_codec": self.block_codec,
             "observed_compressions": observed_compressions,
+            "block_payload_bytes": block_payload_bytes,
+            "block_uncompressed_bytes": block_uncompressed_bytes,
+            "block_compression_ratio": block_payload_bytes / block_uncompressed_bytes if block_uncompressed_bytes else None,
             "payload_format": self.payload_format,
             "rows_per_block": self.rows_per_block,
             "row_count": len(self.row_index),
@@ -457,6 +462,10 @@ def serialize_row(
         raise ValueError(f"Unsupported RowPack payload_format {payload_format!r}")
 
     data, image_payloads = split_row_payload(row)
+    image_metadata = [json_image_metadata(image) for image in image_payloads]
+    if image_metadata:
+        data = dict(data)
+        data["_rowpack_image_metadata"] = image_metadata
     images = [image["bytes"] for image in image_payloads]
     data_bytes = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     image_lengths = [len(image) for image in images]
@@ -499,11 +508,15 @@ def deserialize_row(
     data_start = cursor
     data_stop = data_start + data_json_size
     data = json.loads(bytes(payload[data_start:data_stop]).decode("utf-8"))
+    image_metadata = data.pop("_rowpack_image_metadata", [])
     cursor = data_stop
 
     images = []
-    for length in image_lengths:
-        images.append({"bytes": bytes(payload[cursor : cursor + length]), "path": None})
+    for image_index, length in enumerate(image_lengths):
+        metadata = dict(image_metadata[image_index]) if image_index < len(image_metadata) else {}
+        metadata["bytes"] = bytes(payload[cursor : cursor + length])
+        metadata.setdefault("path", None)
+        images.append(metadata)
         cursor += length
 
     data["images"] = images
@@ -517,17 +530,32 @@ def split_row_payload(row: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     return data, images
 
 
+def json_image_metadata(image: dict[str, Any]) -> dict[str, Any]:
+    metadata = {}
+    for key, value in image.items():
+        if key == "bytes":
+            continue
+        if key in {"height", "width", "channels"} and int(value or 0) == 0:
+            continue
+        if key == "storage" and (value or "encoded") == "encoded":
+            continue
+        if key == "path" and value is None:
+            continue
+        metadata[key] = value
+    return metadata
+
+
 def coerce_image_payload(image: Any) -> dict[str, Any]:
     if isinstance(image, dict) and "bytes" in image and any(
         key in image for key in ("height", "width", "channels", "storage")
     ):
-        return {
-            "bytes": coerce_image_bytes(image["bytes"]),
-            "height": int(image.get("height") or 0),
-            "width": int(image.get("width") or 0),
-            "channels": int(image.get("channels") or 0),
-            "storage": image.get("storage") or "encoded",
-        }
+        payload = dict(image)
+        payload["bytes"] = coerce_image_bytes(image["bytes"])
+        payload["height"] = int(image.get("height") or 0)
+        payload["width"] = int(image.get("width") or 0)
+        payload["channels"] = int(image.get("channels") or 0)
+        payload["storage"] = image.get("storage") or "encoded"
+        return payload
     return {
         "bytes": coerce_image_bytes(image),
         "height": 0,

@@ -2,12 +2,14 @@ cmake_minimum_required(VERSION 3.18)
 project(rowpack LANGUAGES CXX)
 
 option(ROWPACK_BUILD_PYTHON "Build the rowpack_native nanobind module" ON)
-option(ROWPACK_BUILD_EXAMPLES "Build RowPack C++ examples" OFF)
+option(ROWPACK_BUILD_EXAMPLES "Build RowPack C++ examples" ON)
 set(ROWPACK_NANOBIND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nanobind" CACHE PATH "Path to a nanobind checkout")
 set(ROWPACK_CISTA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cista/include" CACHE PATH "Optional path to cista/include")
 set(ROWPACK_QOI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qoi" CACHE PATH "Optional path to qoi.h")
 set(ROWPACK_STB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb" CACHE PATH "Optional path to stb_image.h/stb_image_write.h")
 set(ROWPACK_LZAV_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lzav" CACHE PATH "Optional path to lzav.h")
+
+include(CTest)
 
 add_library(rowpack_headers INTERFACE)
 target_include_directories(rowpack_headers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -54,4 +56,27 @@ endif()
 if(ROWPACK_BUILD_EXAMPLES)
   add_executable(rowpack_cpp_writer_smoke examples/cpp_writer_smoke.cpp)
   target_link_libraries(rowpack_cpp_writer_smoke PRIVATE rowpack_headers)
+
+  if(BUILD_TESTING)
+    add_test(NAME rowpack_cpp_writer_smoke COMMAND rowpack_cpp_writer_smoke)
+    set_tests_properties(rowpack_cpp_writer_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+  endif()
+endif()
+
+if(BUILD_TESTING AND ROWPACK_BUILD_PYTHON)
+  get_filename_component(ROWPACK_SOURCE_PARENT "${CMAKE_CURRENT_SOURCE_DIR}" DIRECTORY)
+  set(ROWPACK_PYTHON_TEST_ENV
+      "PYTHONPATH=${ROWPACK_SOURCE_PARENT}"
+      "ROWPACK_NATIVE_DIR=$<TARGET_FILE_DIR:rowpack_native>")
+
+  add_test(
+      NAME rowpack_python_smoke
+      COMMAND ${Python_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tests/python_smoke.py
+              --output-dir ${CMAKE_CURRENT_BINARY_DIR}/test_output
+              --native-module-dir $<TARGET_FILE_DIR:rowpack_native>)
+  set_tests_properties(rowpack_python_smoke PROPERTIES ENVIRONMENT "${ROWPACK_PYTHON_TEST_ENV}")
+
+  add_test(NAME rowpack_ros2_module_help COMMAND ${Python_EXECUTABLE} -m rowpack.ros2_capture --help)
+  set_tests_properties(rowpack_ros2_module_help PROPERTIES ENVIRONMENT "${ROWPACK_PYTHON_TEST_ENV}")
 endif()

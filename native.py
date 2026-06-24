@@ -33,7 +33,7 @@ def load_native(native_module_dir: str | None = None) -> ModuleType:
                     except ValueError:
                         pass
 
-    message = "Could not import rowpack_native. Build RowPack first with `cmake -S rowpack -B rowpack_build_py && cmake --build rowpack_build_py --config Release`."
+    message = "Could not import rowpack_native. Build RowPack first with `cmake -S . -B build && cmake --build build --config Release`."
     if errors:
         message += " Tried: " + "; ".join(errors)
     raise ModuleNotFoundError(message)
@@ -52,12 +52,13 @@ def native_search_paths(native_module_dir: str | None = None) -> list[Path | Non
     paths.append(None)
 
     cwd = Path.cwd()
-    package_root = Path(__file__).resolve().parents[1]
+    module_path = Path(__file__).resolve()
+    package_root = module_path.parents[1] if module_path.parent.name == "rowpack" else module_path.parent
     for root in dict.fromkeys([cwd, package_root, *cwd.parents]):
         paths.extend(
             [
-                root / "rowpack_build_py" / "Release",
-                root / "rowpack_build_py",
+                root / "rowpack_build" / "Release",
+                root / "rowpack_build",
                 root / "build" / "Release",
                 root / "build",
             ]
