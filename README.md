@@ -21,11 +21,11 @@ RowPack aims at a different hot path: training-time row/window access.
 - Header-only C++ with Python bindings and PyTorch dataloader integration.
 - Examples and writer APIs for recording new datasets or converting existing ones to RowPack.
 - Modern libraries for speed and utility:
-  - [nanobind](https://github.com/wjakob/nanobind)(BSD3) for fast Python bindings.
-  - [CISTA](https://github.com/felixguendling/cista)(MIT) cast-mode payloads avoid rebuilding large Python dictionaries.
-  - [LZAV](https://github.com/avaneev/lzav)(MIT) block compression gives good size reduction with very fast decompression.
-  - [QOI](https://github.com/phoboslab/qoi)(MIT) for fast lossless image decoding and storage.
-  - [STB](https://github.com/nothings/stb)(MIT) image decode and JPEG writing.
+  - [nanobind](https://github.com/wjakob/nanobind) (BSD3) for fast Python bindings.
+  - [CISTA](https://github.com/felixguendling/cista) (MIT) cast-mode payloads avoid rebuilding large Python dictionaries.
+  - [LZAV](https://github.com/avaneev/lzav) (MIT) block compression gives good size reduction with very fast decompression.
+  - [QOI](https://github.com/phoboslab/qoi) (MIT) for fast lossless image decoding and storage.
+  - [STB](https://github.com/nothings/stb) (MIT) image decode and JPEG writing.
 - The Python loader can hand back ready-to-shape byte buffers, so users can go
   straight to `np.frombuffer(...).reshape(h, w, c)`, or let the
   [PyTorch dataloader](torch_dataset.py) take care of batching.
