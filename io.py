@@ -29,6 +29,8 @@ from .format import (
     unpack_header,
 )
 from .native import load_native
+from .search_index import find_index_entries as find_search_index_entries
+from .search_index import index_entry_for_key as search_index_entry_for_key
 
 
 class RowPackError(RuntimeError):
@@ -339,6 +341,30 @@ class RowPackReader:
         close = get_close_matches(name, candidates, n=5)
         suffix = f" Did you mean: {', '.join(close)}?" if close else ""
         raise KeyError(f"Unknown RowPack row name {name!r}.{suffix}")
+
+    def search_index(self, name: str = "documents") -> list[dict[str, Any]]:
+        indexes = self.metadata.get("search_indexes") or {}
+        entries = indexes.get(name) if isinstance(indexes, dict) else None
+        if entries is None:
+            return []
+        if not isinstance(entries, list):
+            raise RowPackError(f"RowPack search index {name!r} is not a list")
+        return [dict(entry) for entry in entries if isinstance(entry, dict)]
+
+    def find_index_entries(self, query: str, *, name: str = "documents", limit: int = 10) -> list[dict[str, Any]]:
+        return find_search_index_entries(self.search_index(name), query, limit=limit)
+
+    def index_entry_for_key(self, key: str, *, name: str = "documents") -> dict[str, Any]:
+        return search_index_entry_for_key(self.search_index(name), key)
+
+    def read_index_entry(self, key_or_entry: str | dict[str, Any], *, name: str = "documents") -> list[dict[str, Any]]:
+        entry = key_or_entry if isinstance(key_or_entry, dict) else self.index_entry_for_key(key_or_entry, name=name)
+        try:
+            start = int(entry["row_start"])
+            count = int(entry["row_count"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RowPackError(f"RowPack search index entry is missing a valid row range: {entry!r}") from exc
+        return self.read_window(start, count)
 
     def _normalize_index(self, index: int) -> int:
         if index < 0:

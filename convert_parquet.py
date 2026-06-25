@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .authoring import MetadataBuilder, RowPackDatasetBuilder
+from .search_index import DocumentIndexBuilder
 
 
 AUTO_IMAGE_COLUMNS = {"image", "images", "img", "imgs"}
@@ -28,6 +29,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image-base-dir", default=None, help="Base directory for relative image paths stored in Parquet rows")
     parser.add_argument("--name-column", default=None, help="Column to use as the RowPack row name")
     parser.add_argument("--alias-column", action="append", default=[], help="Column to use as non-canonical row aliases")
+    parser.add_argument("--index-column", default=None, help="Column that groups rows into searchable document ranges")
+    parser.add_argument("--index-label-column", action="append", default=[], help="Extra column to search in the document index, such as title or author")
+    parser.add_argument("--index-alias-column", action="append", default=[], help="Column containing alternate document ids/names")
+    parser.add_argument("--index-name", default="documents", help="Metadata search index name")
     parser.add_argument("--dataset-name", default=None, help="Dataset name to store in RowPack metadata")
     parser.add_argument("--description", default=None, help="Dataset description to store in RowPack metadata")
     parser.add_argument("--rows-per-block", type=int, default=32)
@@ -52,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
         image_base_dir=Path(args.image_base_dir) if args.image_base_dir else None,
         name_column=args.name_column,
         alias_columns=args.alias_column,
+        index_column=args.index_column,
+        index_label_columns=args.index_label_column,
+        index_alias_columns=args.index_alias_column,
+        index_name=args.index_name,
         dataset_name=args.dataset_name,
         description=args.description,
         rows_per_block=args.rows_per_block,
@@ -75,6 +84,10 @@ def convert_parquet_to_rowpack(
     image_base_dir: Path | None = None,
     name_column: str | None = None,
     alias_columns: Iterable[str] = (),
+    index_column: str | None = None,
+    index_label_columns: Iterable[str] = (),
+    index_alias_columns: Iterable[str] = (),
+    index_name: str = "documents",
     dataset_name: str | None = None,
     description: str | None = None,
     rows_per_block: int = 32,
@@ -92,7 +105,17 @@ def convert_parquet_to_rowpack(
     drop_columns = set(drop_columns or set())
     image_columns = set(image_columns or set())
     alias_columns = list(alias_columns)
-    selected_columns = requested_columns(columns, image_columns, name_column, alias_columns)
+    index_label_columns = list(index_label_columns)
+    index_alias_columns = list(index_alias_columns)
+    selected_columns = requested_columns(
+        columns,
+        image_columns,
+        name_column,
+        alias_columns,
+        index_column=index_column,
+        index_label_columns=index_label_columns,
+        index_alias_columns=index_alias_columns,
+    )
     schema = merged_schema(paths, selected_columns)
     metadata = build_metadata(
         paths,
@@ -101,6 +124,10 @@ def convert_parquet_to_rowpack(
         image_columns=image_columns,
         name_column=name_column,
         alias_columns=alias_columns,
+        index_column=index_column,
+        index_label_columns=index_label_columns,
+        index_alias_columns=index_alias_columns,
+        index_name=index_name,
         dataset_name=dataset_name,
         description=description,
         rows_per_block=rows_per_block,
@@ -109,6 +136,7 @@ def convert_parquet_to_rowpack(
     )
 
     rows_written = 0
+    document_index = DocumentIndexBuilder(index_name=index_name) if index_column else None
     with RowPackDatasetBuilder(
         output,
         metadata=metadata,
@@ -133,8 +161,23 @@ def convert_parquet_to_rowpack(
                         row["images"] = images
                     row_name = row_name_from_record(record, name_column)
                     aliases = row_aliases_from_record(record, alias_columns) if row_name is not None else []
-                    builder.append_row(row, name=row_name, aliases=aliases)
+                    row_id = builder.append_row(row, name=row_name, aliases=aliases)
+                    if document_index is not None:
+                        document_index.observe(
+                            row_id,
+                            record.get(index_column),
+                            labels=[record.get(column) for column in index_label_columns],
+                            aliases=[record.get(column) for column in index_alias_columns],
+                            metadata={"source_file": str(path)},
+                        )
                     rows_written += 1
+        if document_index is not None:
+            builder.writer.metadata.setdefault("search_indexes", {})[index_name] = document_index.finish()
+            builder.writer.metadata.setdefault("search_index_schema", {})[index_name] = document_index.metadata_schema(
+                key_column=index_column,
+                label_columns=index_label_columns,
+                alias_columns=index_alias_columns,
+            )
     return rows_written
 
 
@@ -185,12 +228,28 @@ def requested_columns(
     image_columns: set[str],
     name_column: str | None,
     alias_columns: Iterable[str],
+    *,
+    index_column: str | None = None,
+    index_label_columns: Iterable[str] = (),
+    index_alias_columns: Iterable[str] = (),
 ) -> list[str] | None:
     if columns is None:
         return None
-    requested = list(dict.fromkeys([*columns, *image_columns, *(alias_columns or [])]))
+    requested = list(
+        dict.fromkeys(
+            [
+                *columns,
+                *image_columns,
+                *(alias_columns or []),
+                *(index_label_columns or []),
+                *(index_alias_columns or []),
+            ]
+        )
+    )
     if name_column:
         requested.append(name_column)
+    if index_column:
+        requested.append(index_column)
     return list(dict.fromkeys(requested))
 
 
@@ -210,6 +269,10 @@ def build_metadata(
     image_columns: set[str],
     name_column: str | None,
     alias_columns: list[str],
+    index_column: str | None,
+    index_label_columns: list[str],
+    index_alias_columns: list[str],
+    index_name: str,
     dataset_name: str | None,
     description: str | None,
     rows_per_block: int,
@@ -231,6 +294,17 @@ def build_metadata(
         metadata.extra("name_column", name_column)
     if alias_columns:
         metadata.extra("alias_columns", alias_columns)
+    if index_column:
+        metadata.extra(
+            "search_index_config",
+            {
+                "index_name": index_name,
+                "kind": "document_ranges",
+                "key_column": index_column,
+                "label_columns": index_label_columns,
+                "alias_columns": index_alias_columns,
+            },
+        )
 
     for field in schema:
         meaning = "Parquet image payload column" if field.name in image_columns else "Parquet source column"

@@ -76,6 +76,18 @@ class MetadataBuilder:
         self.values["image_codec_settings"] = {"codec": codec, **options}
         return self
 
+    def search_index(
+        self,
+        name: str,
+        entries: Iterable[dict[str, Any]],
+        *,
+        schema: dict[str, Any] | None = None,
+    ) -> "MetadataBuilder":
+        self.values.setdefault("search_indexes", {})[name] = [dict(entry) for entry in entries]
+        if schema is not None:
+            self.values.setdefault("search_index_schema", {})[name] = dict(schema)
+        return self
+
     def extra(self, key: str, value: Any) -> "MetadataBuilder":
         self.values[key] = value
         return self

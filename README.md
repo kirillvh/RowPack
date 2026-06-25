@@ -16,10 +16,11 @@ RowPack aims at a different hot path: training-time row/window access.
 
 ## Why It Is Useful
 
-- Row-major layout enables speed by matching random-access shuffle training better than column-major
+- Row-major layout enables speed by matching random-access shuffle training with better throughput than column-major
   Parquet files.
 - Header-only C++ with Python bindings and PyTorch dataloader integration.
-- Examples and writer APIs for recording new datasets or converting existing ones to RowPack.
+- Converters to port Parquet or JSONL files to Rowpack format. Includes method to chunk long inputs across multiple rows with searchable index.
+- Friendly examples to get you started quickly.
 - Modern libraries for speed and utility:
   - [nanobind](https://github.com/wjakob/nanobind) (BSD3) for fast Python bindings.
   - [CISTA](https://github.com/felixguendling/cista) (MIT) cast-mode payloads avoid rebuilding large Python dictionaries.
@@ -126,6 +127,13 @@ Useful options:
   balance compression ratio with shuffled random-window read performance.
 - `name-column id`: use a stable Parquet column as the RowPack row name, so
   rows can be addressed by name later.
+- `index-column document_id`: build a searchable document index in metadata.
+  This groups contiguous rows with the same document id into one range, which
+  is useful when a RowPack contains many books, articles, episodes, or robot
+  runs.
+- `index-label-column title`: add extra searchable labels to the document
+  index. Repeat it for fields such as title, author, ISBN, source URL, or
+  dataset split.
 - `columns` and `drop-column`: limit which Parquet columns are read or stored.
   Non-image binary columns are preserved as base64 JSON wrappers so generic
   conversion does not silently throw bytes away.
@@ -135,6 +143,95 @@ uses the same writer API a Parquet converter would use.
 
 For fully custom image handling, use `RowPackDatasetBuilder` directly. That is
 where modes such as `raw_rgb`, `qoi_lossless`, and `jpeg_lossy` are available.
+
+## Convert JSONL To RowPack
+
+JSONL is common for text and instruction datasets. RowPack includes a streaming
+converter that reads one JSON object per line and writes one RowPack row per
+JSONL row by default:
+
+```bash
+python3 -m rowpack.convert_jsonl \
+  --input data/lamini_docs.jsonl \
+  --output build/datasets/lamini_docs.rowpack \
+  --payload-format cista \
+  --block-codec lzav_hi \
+  --native-module-dir build \
+  --overwrite
+```
+
+The small Hugging Face dataset `kotzeje/lamini_docs.jsonl` has a simple
+documentation-QA shape with `question` and `answer` fields. If you export that
+dataset to a local JSONL file, the command above converts it directly.
+
+Useful options mirror the Parquet converter:
+
+- `columns question answer`: keep only selected JSON keys.
+- `drop-column metadata`: remove a noisy key from every row.
+- `image-column image`: move image bytes/paths/structs into RowPack's `images`
+  payload list.
+- `name-column id`: use a stable JSON key as the RowPack row name.
+- `index-column book_id`: group rows into searchable document ranges.
+- `index-label-column title`: make human-friendly titles searchable without
+  requiring them to be the canonical key.
+
+For very long fields, use opt-in splitting:
+
+```bash
+python3 -m rowpack.convert_jsonl \
+  --input data/lamini_docs.jsonl \
+  --output build/datasets/lamini_docs_split.rowpack \
+  --split-column answer \
+  --split-max-chars 2048 \
+  --split-overlap-chars 128 \
+  --overwrite
+```
+
+This is feasible and often useful, but it should be explicit. When a field is
+split, RowPack writes the first chunk with the rest of the source row, then
+writes continuation rows that contain only the split field chunk plus
+`_rowpack_split` metadata. For example, a row shaped like `A, B, C` can become
+`A, B1, C`, then `B2`, then `B3`. The continuation rows record the source file,
+source line, part index, total part count, and split columns so training code
+can decide whether to consume them as independent samples or stitch them back
+together.
+
+## Searchable Document Indexes
+
+RowPack can store optional search indexes in metadata. The built-in converter
+index is deliberately small: it is a document/range catalog, not a full-text
+engine. Each entry says "this book/article/run starts at row N and spans M
+rows", plus searchable labels and aliases.
+
+For a corpus with many books:
+
+```bash
+python3 -m rowpack.convert_jsonl \
+  --input data/books.jsonl \
+  --output build/datasets/books.rowpack \
+  --index-column book_id \
+  --index-label-column title \
+  --index-label-column author \
+  --index-alias-column isbn \
+  --payload-format cista \
+  --block-codec lzav_hi \
+  --native-module-dir build \
+  --overwrite
+```
+
+Read it back by key, title, author, or alias:
+
+```python
+from rowpack import RowPackReader
+
+with RowPackReader("build/datasets/books.rowpack", native_module_dir="build") as reader:
+    matches = reader.find_index_entries("moby", limit=5)
+    book_rows = reader.read_index_entry(matches[0])
+```
+
+The same flags are available on `rowpack.convert_parquet`. When JSONL long-field
+splitting is enabled, continuation rows remain inside the same document range,
+so `read_index_entry(...)` returns all chunks for that document.
 
 ## Create RowPack Directly
 
@@ -277,13 +374,13 @@ access, 32-row windows, 8,192 reproducibly sampled rows, 100 warmup steps, and
 
 | variant | size | samples/s | data wait |
 | --- | ---: | ---: | ---: |
-| parquet_uncompressed | 286.33 MiB | 22.99 | 27.65 ms |
-| parquet_zstd | 262.27 MiB | 22.47 | 28.65 ms |
-| parquet_gzip | 258.02 MiB | 14.28 | 54.10 ms |
-| parquet_brotli | 258.37 MiB | 13.46 | 58.36 ms |
-| rowpack_none | 287.59 MiB | 24.13 | 25.18 ms |
-| rowpack_lzav_default | 266.04 MiB | 23.89 | 25.67 ms |
-| rowpack_lzav_hi | 259.03 MiB | 23.88 | 25.65 ms |
+| parquet_uncompressed | 286.33 MiB | 22.87 | 27.60 ms |
+| parquet_zstd | 262.27 MiB | 22.44 | 28.39 ms |
+| parquet_gzip | 258.02 MiB | 14.22 | 53.82 ms |
+| parquet_brotli | 258.37 MiB | 13.45 | 58.11 ms |
+| rowpack_none | 287.59 MiB | 23.65 | 25.86 ms |
+| rowpack_lzav_default | 266.04 MiB | 23.38 | 26.36 ms |
+| rowpack_lzav_hi | 259.03 MiB | 23.31 | 26.40 ms |
 
 ![Mean data wait](docs/images/mm_infographic_vqa_data_wait_ms.png)
 
