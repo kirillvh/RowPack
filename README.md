@@ -38,12 +38,6 @@ high-ratio blocks compresses close to Parquet GZIP/Brotli size while keeping
 throughput near the uncompressed row-major baseline and well ahead of the
 slower Parquet codecs.
 
-## Portable and Self Contained
-
-The native build is self-contained under `third_party/`, and the C++ writer is
-header-only for easy embedding. The bundled dependencies and this repository
-are permissively licensed.
-
 ## Build
 
 From the repository root:
