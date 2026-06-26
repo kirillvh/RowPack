@@ -82,6 +82,7 @@ class NativeCistaVQARows:
         read_block_size: int = 32,
         seed: int = 0,
         native_module_dir: str | None = None,
+        native_decode_images: bool = True,
     ):
         if not paths:
             raise ValueError("NativeCistaVQARows requires at least one .rowpack path")
@@ -91,6 +92,7 @@ class NativeCistaVQARows:
         self.read_block_size = max(1, read_block_size)
         self.seed = seed
         self.native = load_native(native_module_dir)
+        self.native_decode_images = native_decode_images
         self.total_rows = self._count_rows()
 
     def __len__(self) -> int:
@@ -114,7 +116,7 @@ class NativeCistaVQARows:
             else:
                 per_file_max = min(remaining, row_count)
             for row_idx in self._iter_indices(row_count, per_file_max, self.seed + file_idx):
-                yield reader.read_cista_vqa_row(row_idx)
+                yield reader.read_cista_vqa_row(row_idx, self.native_decode_images)
                 yielded += 1
                 if self.max_rows is not None and yielded >= self.max_rows:
                     return

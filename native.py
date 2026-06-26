@@ -58,6 +58,8 @@ def native_search_paths(native_module_dir: str | None = None) -> list[Path | Non
     for root in dict.fromkeys([cwd, package_dir, package_root, *cwd.parents]):
         paths.extend(
             [
+                root / "rowpack_build_py" / "Release",
+                root / "rowpack_build_py",
                 root / "rowpack_build" / "Release",
                 root / "rowpack_build",
                 root / "build" / "Release",

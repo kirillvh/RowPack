@@ -86,6 +86,7 @@ class RowPackBlockDataset(IterableDataset):
         seed: int = 0,
         max_rows: int | None = None,
         native_module_dir: str | None = None,
+        native_decode_images: bool = True,
         shard_workers: bool = True,
     ):
         if list_path is None and not paths:
@@ -109,6 +110,7 @@ class RowPackBlockDataset(IterableDataset):
 
         self.max_rows = max_rows
         self.native_module_dir = native_module_dir
+        self.native_decode_images = native_decode_images
         self.shard_workers = shard_workers
         self.files = [read_file_info(path) for path in self.paths]
         self.total_rows = sum(info.row_count for info in self.files)
@@ -200,7 +202,12 @@ class RowPackBlockDataset(IterableDataset):
             start, row_count = info.blocks[block_index]
             stop = start + row_count
             for row_index in range(start, stop):
-                yield reader.read_cista_vqa_row(row_index)
+                try:
+                    yield reader.read_cista_vqa_row(row_index, self.native_decode_images)
+                except TypeError:
+                    # Older rowpack_native builds always decode images and only
+                    # accept the row index. Keep them usable for existing clones.
+                    yield reader.read_cista_vqa_row(row_index)
             return
 
         reader = readers.get(file_index)
@@ -222,6 +229,33 @@ class RowPackBlockDataset(IterableDataset):
 
 def read_rowpack_list(list_path: str | Path) -> list[Path]:
     list_path = Path(list_path)
+    if list_path.suffix == ".rowpack" and list_path.exists():
+        return [list_path.resolve()]
+    if not list_path.exists():
+        parent = list_path.parent
+        nearby = sorted(parent.glob("*.rowpack")) if parent.exists() else []
+        if nearby:
+            examples = "\n".join(f"  {path.name}" for path in nearby[:5])
+            raise FileNotFoundError(
+                f"RowPack list file not found: {list_path}\n\n"
+                "A RowPack list is a plain UTF-8 text file with one .rowpack path per line. "
+                "Create it with:\n\n"
+                f"  python -m rowpack.make_list --input {parent} --output {list_path} --overwrite\n\n"
+                f"Found {len(nearby)} .rowpack file(s) nearby, for example:\n{examples}"
+            )
+        raise FileNotFoundError(
+            f"RowPack list file not found: {list_path}\n\n"
+            "A RowPack list is a plain UTF-8 text file with one .rowpack path per line. "
+            "If you have already converted data, create the list with:\n\n"
+            f"  python -m rowpack.make_list --input path/to/rowpacks --output {list_path} --overwrite\n\n"
+            "For the mm_infographic_vqa baseline, first create the RowPack file and list with:\n\n"
+            "  python benchmarks/prepare_mm_infographic_vqa_rowpack.py "
+            "--data-files data/variants/mm_infographic_vqa/uncompressed.parquet "
+            "--output-dir data/variants/mm_infographic_vqa_rowpack "
+            "--variant-name rowpack_cista_lzav_hi "
+            "--payload-format cista --block-codec lzav_hi --rows-per-block 32 "
+            "--rowpack-native-dir rowpack_build_py/Release --overwrite"
+        )
     base = list_path.resolve().parent
     paths: list[Path] = []
     for raw_line in list_path.read_text(encoding="utf-8").splitlines():

@@ -418,7 +418,11 @@ nb::dict stored_image_to_python_dict(rowpack::cast_payload::Image const& image) 
   return image_dict;
 }
 
-nb::dict direct_image_to_python_dict(rowpack::cast_payload::Image const& image) {
+nb::dict direct_image_to_python_dict(rowpack::cast_payload::Image const& image, bool decode_images) {
+  if (!decode_images) {
+    return stored_image_to_python_dict(image);
+  }
+
   auto const storage = image.storage.str();
 #ifdef ROWPACK_USE_QOI
   if (storage == "qoi_lossless") {
@@ -443,7 +447,7 @@ std::string trim_copy(std::string value) {
   return value;
 }
 
-nb::tuple cista_row_to_vqa_tuple(rowpack::cast_payload::Row const& row) {
+nb::tuple cista_row_to_vqa_tuple(rowpack::cast_payload::Row const& row, bool decode_images = true) {
   nb::list pairs;
   nb::list images;
   std::vector<std::string> pending_user;
@@ -478,7 +482,7 @@ nb::tuple cista_row_to_vqa_tuple(rowpack::cast_payload::Row const& row) {
   }
 
   for (auto const& image : row.images) {
-    images.append(direct_image_to_python_dict(image));
+    images.append(direct_image_to_python_dict(image, decode_images));
   }
 
   return nb::make_tuple(nb::int_(row.row_id), pairs, images);
@@ -551,12 +555,12 @@ nb::tuple decode_cista_payload(nb::bytes payload) {
   return nb::make_tuple(nb::int_(row->row_id), turns, images, row->extra_json.str());
 }
 
-nb::tuple decode_cista_vqa_payload(nb::bytes payload) {
+nb::tuple decode_cista_vqa_payload(nb::bytes payload, bool decode_images = true) {
   auto const bytes = bytes_string(payload);
   auto const* row = cista::deserialize<rowpack::cast_payload::Row, cista::mode::CAST>(
       reinterpret_cast<std::uint8_t const*>(bytes.data()),
       reinterpret_cast<std::uint8_t const*>(bytes.data() + bytes.size()));
-  return cista_row_to_vqa_tuple(*row);
+  return cista_row_to_vqa_tuple(*row, decode_images);
 }
 
 #endif
@@ -574,19 +578,19 @@ NB_MODULE(rowpack_native, m) {
       .def("read_row_bytes", &rowpack::Reader::read_row_bytes)
       .def("read_window_bytes", &rowpack::Reader::read_window_bytes)
 #ifdef ROWPACK_USE_CISTA
-      .def("read_cista_vqa_row", [](rowpack::Reader& reader, std::uint64_t row) {
+      .def("read_cista_vqa_row", [](rowpack::Reader& reader, std::uint64_t row, bool decode_images) {
         auto bytes = reader.read_row_bytes(row);
         auto const* decoded = cista::deserialize<rowpack::cast_payload::Row, cista::mode::CAST>(
             bytes.data(), bytes.data() + bytes.size());
-        return cista_row_to_vqa_tuple(*decoded);
-      })
+        return cista_row_to_vqa_tuple(*decoded, decode_images);
+      }, nb::arg("row"), nb::arg("decode_images") = true)
 #endif
       ;
 
 #ifdef ROWPACK_USE_CISTA
   m.def("encode_cista_payload", &encode_cista_payload);
   m.def("decode_cista_payload", &decode_cista_payload);
-  m.def("decode_cista_vqa_payload", &decode_cista_vqa_payload);
+  m.def("decode_cista_vqa_payload", &decode_cista_vqa_payload, nb::arg("payload"), nb::arg("decode_images") = true);
 #endif
 #ifdef ROWPACK_USE_LZAV
   m.def("lzav_compress", &lzav_compress_bytes);
@@ -594,6 +598,24 @@ NB_MODULE(rowpack_native, m) {
 #endif
 #if defined(ROWPACK_USE_STB) && defined(ROWPACK_USE_CISTA)
   m.def("jpeg_encode_rgb", &jpeg_encode_rgb_bytes);
+#endif
+#ifdef ROWPACK_USE_QOI
+  m.def(
+      "qoi_encode_rgb",
+      [](nb::bytes payload, std::uint32_t height, std::uint32_t width, std::uint32_t channels) {
+        auto const raw = bytes_string(payload);
+        auto encoded = qoi_encode_rgb(raw, height, width, channels);
+        return nb::bytes(encoded.data(), encoded.size());
+      },
+      nb::arg("payload"), nb::arg("height"), nb::arg("width"), nb::arg("channels"));
+  m.def(
+      "qoi_decode_rgb",
+      [](nb::bytes payload) {
+        auto const raw = bytes_string(payload);
+        return qoi_decode_to_raw_dict(
+            reinterpret_cast<std::uint8_t const*>(raw.data()), raw.size());
+      },
+      nb::arg("payload"));
 #endif
 #ifdef ROWPACK_USE_LIBAVIF
   m.def("avif_runtime_info", &avif_runtime_info);

@@ -1,8 +1,6 @@
 # RowPack: Faster than Parquet but compression as good as its best, with image/video encoding for dataset capture built-in
 
-![Training throughput](docs/images/mm_infographic_vqa_samples_per_s.png)
-
-![Input file size](docs/images/mm_infographic_vqa_input_mib.png)
+![Size Vs Throughput](docs/images/size_vs_throughput.png)
 
 ![Webcam RowPack size](docs/images/webcam_storage_rowpack_size_mib.png)
 
@@ -516,6 +514,40 @@ timestamps, frame count, fps, encoder settings, and size metadata. That gives a
 small, seekable capture format for camera episodes without the storage bloat and
 workflow friction of ordinary camera logs.
 
+### Audio Streams
+
+RowPack has no first-class audio codec, but the file-attachment and continuation
+row machinery used for camera streams works for microphones too. Store each
+audio buffer (raw PCM, WAV, FLAC, Opus, ...) as a row payload and the reader
+preserves it byte-for-byte:
+
+```python
+from rowpack.authoring import MetadataBuilder, RowPackDatasetBuilder
+
+with RowPackDatasetBuilder(
+    "build/examples/mic_capture.rowpack",
+    metadata=MetadataBuilder().dataset_name("mic_capture"),
+    payload_format="cista",
+    overwrite=True,
+) as builder:
+    builder.append_video_chunk_row(
+        stream="mic_0",
+        chunk={"bytes": wav_bytes, "name": "mic_0_chunk_000000.wav"},
+        chunk_index=0,
+        codec="wav",
+        mime_type="audio/wav",
+        start_timestamp_ns=0,
+        end_timestamp_ns=1_000_000_000,
+        frame_count=16000,  # samples in this chunk
+        fps=16000.0,        # sample rate
+    )
+```
+
+For one-shot attachments (a single speech clip with metadata) use
+`builder.append_file_row(files=[{"bytes": ..., "mime_type": "audio/wav", ...}])`
+instead. Audio integration tests for WAV, raw PCM, Opus, and FLAC live in
+[../tests/test_rowpack_avif_audio.py](../tests/test_rowpack_avif_audio.py).
+
 ### Webcam Storage Benchmark
 
 The webcam storage benchmark records one frame sequence, then writes the same
@@ -769,8 +801,8 @@ for row_id, text_pairs, images in rows:
 ## Benchmark
 
 The benchmark scripts used to generate the published `mm_infographic_vqa`
-charts are part of the [nanoVLM](https://github.com/kirillvh/nanoVLM) sister repository used to demonstrate rowpack usage in a VLM application. 
-This repository also includes a simplified self contained benchmark as follows:
+charts live in the nanoVLM checkout that demonstrates RowPack in a real VLM
+training path. RowPack itself also includes a small self-contained benchmark:
 
 ```bash
 python3 examples/quick_benchmark.py \
@@ -784,28 +816,88 @@ Parquet, convert Parquet, or compare against Parquet. It is useful for
 confirming that the code and native module are working before you run a real
 dataset comparison.
 
+For the real comparison, run the parent nanoVLM benchmark wrapper from the
+nanoVLM repository root:
+
+```bash
+bash benchmarks/run_mega_benchmark.sh --overwrite
+```
+
+or on Windows PowerShell:
+
+```powershell
+.\benchmarks\run_mega_benchmark.ps1 -Overwrite
+```
+
+That benchmark builds `rowpack_native`, prepares 15 Parquet/RowPack variants,
+runs the same tiny CPU VLM training loop for each variant, writes
+`environment.json`, and plots file size against training throughput.
+
 Example results on `nimapourjafar/mm_infographic_vqa`, using random-block
-access, 32-row windows, 8,192 reproducibly sampled rows, 100 warmup steps, and
-1,000 measured CPU training-loop steps:
+access, 16-row windows, 256 profiled rows, 4 warmup steps, and 32 measured CPU
+training-loop steps on a Windows CPU machine:
+
 
 | variant | size | samples/s | data wait |
 | --- | ---: | ---: | ---: |
-| parquet_uncompressed | 286.33 MiB | 22.87 | 27.60 ms |
-| parquet_zstd | 262.27 MiB | 22.44 | 28.39 ms |
-| parquet_gzip | 258.02 MiB | 14.22 | 53.82 ms |
-| parquet_brotli | 258.37 MiB | 13.45 | 58.11 ms |
-| rowpack_none | 287.59 MiB | 23.65 | 25.86 ms |
-| rowpack_lzav_default | 266.04 MiB | 23.38 | 26.36 ms |
-| rowpack_lzav_hi | 259.03 MiB | 23.31 | 26.40 ms |
+| parquet_jpeg_uncompressed | 19.94845569 | 286.3609037 | 33.88888124 | 
+| parquet_jpeg_gzip | 9.54272229 | 258.0771341 | 88.06569688 | 
+| parquet_jpeg_brotli | 8.708754827 | 258.4698963 | 98.55902188 | 
+| parquet_png_uncompressed | 5.394367454 | 1695.033717 | 169.2236938 | 
+| parquet_png_gzip | 2.41614882 | 1685.762308 | 397.4449688 | 
+| parquet_png_brotli | 4.576861699 | 1694.150908 | 202.3639906 | 
+| parquet_rgb_uncompressed | 1.760355297 | 6178.099416 | 551.7379406 | 
+| parquet_rgb_gzip | 0.695188953 | 1919.04674 | 1422.367934 | 
+| parquet_rgb_brotli | 0.598896229 | 1801.803796 | 1653.107447 | 
+| rowpack_jpeg_json_lzav_hi | 27.67237055 | 258.8313484 | 20.35160938 | 
+| rowpack_jpeg_cista_lzav_hi | 27.80228819 | 258.9720745 | 20.06676876 | 
+| rowpack_qoi_json_lzav_hi | 18.88283596 | 1837.930954 | 36.79612812 | 
+| rowpack_qoi_cista_lzav_hi | 20.46343281 | 1838.041556 | 32.62303124 | 
+| rowpack_rgb_json_lzav_hi | 17.05631098 | 2122.843522 | 42.32248125 | 
+| rowpack_rgb_cista_lzav_hi | 21.09696852 | 2122.968239 | 31.47287813 | 
 
-![Mean data wait](docs/images/mm_infographic_vqa_data_wait_ms.png)
+
+The strongest default for this JPEG/JFIF-heavy dataset is
+`rowpack_jpeg_cista_lzav_hi`: it lands at roughly the same size as
+GZIP/Brotli Parquet while reading substantially faster in this training-loop
+benchmark. QOI is lossless relative to decoded pixels, so it is not expected to
+beat an already-lossy JPEG source on file size; it is more interesting for
+lossless-source datasets.
 
 ## Use With nanoVLM
 
-Create a RowPack list file:
+First create the RowPack variant. The converter writes the `.rowpack`, updates
+`manifest.json`, and creates both `rowpacks.txt` and a variant-specific list
+file such as `rowpacks_rowpack_cista_lzav_hi.txt`:
+
+```bash
+python3 benchmarks/prepare_mm_infographic_vqa_rowpack.py \
+  --data-files data/variants/mm_infographic_vqa/uncompressed.parquet \
+  --output-dir data/variants/mm_infographic_vqa_rowpack \
+  --variant-name rowpack_cista_lzav_hi \
+  --rows-per-block 32 \
+  --payload-format cista \
+  --image-storage encoded \
+  --block-codec lzav_hi \
+  --rowpack-native-dir rowpack_build_py/Release \
+  --overwrite
+```
+
+`rowpacks.txt` is just a plain UTF-8 text file with one `.rowpack` path per
+line. Paths may be absolute, or relative to the directory containing the list
+file. For the command above it will look like this:
 
 ```text
-data/variants/mm_infographic_vqa_rowpack/rowpack_cista_lzav_hi.rowpack
+rowpack_cista_lzav_hi.rowpack
+```
+
+If you already have one or more RowPack files, generate the list directly:
+
+```bash
+python3 -m rowpack.make_list \
+  --input data/variants/mm_infographic_vqa_rowpack \
+  --output data/variants/mm_infographic_vqa_rowpack/rowpacks.txt \
+  --overwrite
 ```
 
 Then point `train.py` at that list:
@@ -813,6 +905,7 @@ Then point `train.py` at that list:
 ```bash
 python3 train.py \
   --rowpack_list data/variants/mm_infographic_vqa_rowpack/rowpacks.txt \
+  --rowpack_native_dir rowpack_build_py/Release \
   --rowpack_read_mode shuffle \
   --rowpack_seed 123 \
   --batch_size 1 \
@@ -820,12 +913,17 @@ python3 train.py \
   --no_log_wandb
 ```
 
+`--rowpack_native_dir` is optional when `rowpack_native` is already on
+`PYTHONPATH` or was built into a common local directory such as
+`rowpack_build_py/Release`, `rowpack_build/Release`, or `build/Release`.
+
 For a quick CPU-only integration check without downloading pretrained
 backbones:
 
 ```bash
 python3 train.py \
   --rowpack_list data/variants/mm_infographic_vqa_rowpack/rowpacks.txt \
+  --rowpack_native_dir rowpack_build_py/Release \
   --rowpack_read_mode shuffle \
   --rowpack_seed 123 \
   --rowpack_max_rows 256 \

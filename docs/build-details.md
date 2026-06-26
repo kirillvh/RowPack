@@ -156,6 +156,18 @@ cmake -S . -B build-avif \
 cmake --build build-avif --config Release
 ```
 
+On Linux distributions that ship `libaom-dev` + `libdav1d-dev` but no
+`librav1e-dev` package (e.g. Ubuntu 24.04), substitute AOM for the encoder:
+
+```bash
+cmake -S . -B build-avif \
+  -DROWPACK_ENABLE_LIBAVIF=ON \
+  -DAVIF_CODEC_AOM=SYSTEM \
+  -DAVIF_CODEC_DAV1D=SYSTEM \
+  -DAVIF_CODEC_RAV1E=OFF
+cmake --build build-avif --config Release
+```
+
 AOM remains available if you explicitly choose it, but that is no longer the
 RowPack default. On Windows, AOM's local build requires Perl. Optimized x86 AOM
 builds also require NASM or YASM unless `-DAOM_TARGET_CPU=generic` is used.
