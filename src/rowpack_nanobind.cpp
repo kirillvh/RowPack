@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 
 #include "rowpack/rowpack.hpp"
@@ -24,6 +26,10 @@
 #define STBI_WRITE_NO_STDIO
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#endif
+
+#ifdef ROWPACK_USE_LIBAVIF
+#include "avif/avif.h"
 #endif
 
 namespace nb = nanobind;
@@ -82,6 +88,188 @@ nb::bytes lzav_decompress_bytes(nb::bytes payload, std::uint64_t uncompressed_si
     throw std::runtime_error("LZAV decompression failed");
   }
   return nb::bytes(reinterpret_cast<char const*>(out.data()), out.size());
+}
+#endif
+
+#ifdef ROWPACK_USE_LIBAVIF
+int avif_quality_to_quantizer(int quality) {
+  if (quality < 1 || quality > 100) {
+    throw std::runtime_error("AVIF quality must be in [1, 100]");
+  }
+  return static_cast<int>(std::lround((100 - quality) * 63.0 / 99.0));
+}
+
+avifPixelFormat avif_pixel_format_from_string(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  if (value == "yuv420" || value == "420") {
+    return AVIF_PIXEL_FORMAT_YUV420;
+  }
+  if (value == "yuv422" || value == "422") {
+    return AVIF_PIXEL_FORMAT_YUV422;
+  }
+  if (value == "yuv444" || value == "444") {
+    return AVIF_PIXEL_FORMAT_YUV444;
+  }
+  throw std::runtime_error("Unsupported AVIF pixel format: " + value);
+}
+
+nb::dict avif_runtime_info() {
+  nb::dict info;
+  char codec_versions[256] = {};
+  avifCodecVersions(codec_versions);
+  info["version"] = avifVersion();
+  info["codec_versions"] = codec_versions;
+  return info;
+}
+
+nb::bytes avif_encode_rgb_sequence(nb::list frames, std::uint32_t height, std::uint32_t width, double fps, int quality,
+                                   int speed, int max_threads, std::string const& yuv_format) {
+  if (frames.size() == 0) {
+    throw std::runtime_error("AVIF encode requires at least one frame");
+  }
+  if (height == 0 || width == 0) {
+    throw std::runtime_error("AVIF encode requires nonzero width and height");
+  }
+  if (fps <= 0.0) {
+    throw std::runtime_error("AVIF encode requires fps > 0");
+  }
+  if (speed < AVIF_SPEED_SLOWEST || speed > AVIF_SPEED_FASTEST) {
+    throw std::runtime_error("AVIF speed must be in [0, 10]");
+  }
+
+  auto const expected_size = static_cast<std::size_t>(height) * static_cast<std::size_t>(width) * 3U;
+  auto const pixel_format = avif_pixel_format_from_string(yuv_format);
+  auto const quantizer = avif_quality_to_quantizer(quality);
+  auto encoder = std::unique_ptr<avifEncoder, decltype(&avifEncoderDestroy)>(avifEncoderCreate(), avifEncoderDestroy);
+  if (!encoder) {
+    throw std::runtime_error("avifEncoderCreate failed");
+  }
+  encoder->maxThreads = max_threads <= 0 ? 1 : max_threads;
+  encoder->speed = speed;
+  encoder->minQuantizer = quantizer;
+  encoder->maxQuantizer = quantizer;
+  encoder->minQuantizerAlpha = quantizer;
+  encoder->maxQuantizerAlpha = quantizer;
+  encoder->timescale = 1'000'000;
+
+  auto const duration = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::llround(1'000'000.0 / fps)));
+  auto const frame_count = frames.size();
+  for (std::size_t index = 0; index < frame_count; ++index) {
+    auto const bytes = bytes_string(frames[index]);
+    if (bytes.size() != expected_size) {
+      throw std::runtime_error("AVIF frame byte length does not match height*width*3");
+    }
+
+    auto image = std::unique_ptr<avifImage, decltype(&avifImageDestroy)>(
+        avifImageCreate(width, height, 8, pixel_format), avifImageDestroy);
+    if (!image) {
+      throw std::runtime_error("avifImageCreate failed");
+    }
+    image->yuvRange = AVIF_RANGE_FULL;
+
+    avifRGBImage rgb;
+    avifRGBImageSetDefaults(&rgb, image.get());
+    rgb.format = AVIF_RGB_FORMAT_RGB;
+    rgb.depth = 8;
+    rgb.pixels = reinterpret_cast<std::uint8_t*>(const_cast<char*>(bytes.data()));
+    rgb.rowBytes = static_cast<std::uint32_t>(width * 3U);
+
+    auto result = avifImageRGBToYUV(image.get(), &rgb);
+    if (result != AVIF_RESULT_OK) {
+      throw std::runtime_error(std::string("avifImageRGBToYUV failed: ") + avifResultToString(result));
+    }
+
+    auto const flags = frame_count == 1 ? AVIF_ADD_IMAGE_FLAG_SINGLE : AVIF_ADD_IMAGE_FLAG_NONE;
+    result = avifEncoderAddImage(encoder.get(), image.get(), duration, flags);
+    if (result != AVIF_RESULT_OK) {
+      throw std::runtime_error(std::string("avifEncoderAddImage failed: ") + avifResultToString(result));
+    }
+  }
+
+  avifRWData output = AVIF_DATA_EMPTY;
+  auto result = avifEncoderFinish(encoder.get(), &output);
+  if (result != AVIF_RESULT_OK) {
+    throw std::runtime_error(std::string("avifEncoderFinish failed: ") + avifResultToString(result));
+  }
+  nb::bytes encoded(reinterpret_cast<char const*>(output.data), output.size);
+  avifRWDataFree(&output);
+  return encoded;
+}
+
+nb::dict avif_decode_rgb_sequence(nb::bytes payload, int max_threads) {
+  auto const bytes = bytes_string(payload);
+  if (bytes.empty()) {
+    throw std::runtime_error("AVIF decode requires non-empty bytes");
+  }
+
+  auto decoder = std::unique_ptr<avifDecoder, decltype(&avifDecoderDestroy)>(avifDecoderCreate(), avifDecoderDestroy);
+  if (!decoder) {
+    throw std::runtime_error("avifDecoderCreate failed");
+  }
+  decoder->maxThreads = max_threads <= 0 ? 1 : max_threads;
+
+  auto result = avifDecoderSetIOMemory(
+      decoder.get(),
+      reinterpret_cast<std::uint8_t const*>(bytes.data()),
+      bytes.size());
+  if (result != AVIF_RESULT_OK) {
+    throw std::runtime_error(std::string("avifDecoderSetIOMemory failed: ") + avifResultToString(result));
+  }
+
+  result = avifDecoderParse(decoder.get());
+  if (result != AVIF_RESULT_OK) {
+    throw std::runtime_error(std::string("avifDecoderParse failed: ") + avifResultToString(result));
+  }
+
+  nb::list frames;
+  while (true) {
+    result = avifDecoderNextImage(decoder.get());
+    if (result == AVIF_RESULT_NO_IMAGES_REMAINING) {
+      break;
+    }
+    if (result != AVIF_RESULT_OK) {
+      throw std::runtime_error(std::string("avifDecoderNextImage failed: ") + avifResultToString(result));
+    }
+
+    avifRGBImage rgb;
+    avifRGBImageSetDefaults(&rgb, decoder->image);
+    rgb.format = AVIF_RGB_FORMAT_RGB;
+    rgb.depth = 8;
+    auto allocation = avifRGBImageAllocatePixels(&rgb);
+    if (allocation != AVIF_RESULT_OK) {
+      throw std::runtime_error(std::string("avifRGBImageAllocatePixels failed: ") + avifResultToString(allocation));
+    }
+
+    auto conversion = avifImageYUVToRGB(decoder->image, &rgb);
+    if (conversion != AVIF_RESULT_OK) {
+      avifRGBImageFreePixels(&rgb);
+      throw std::runtime_error(std::string("avifImageYUVToRGB failed: ") + avifResultToString(conversion));
+    }
+
+    auto const frame_size = static_cast<std::size_t>(decoder->image->height) *
+                            static_cast<std::size_t>(decoder->image->width) * 3U;
+    frames.append(nb::bytes(reinterpret_cast<char const*>(rgb.pixels), frame_size));
+    avifRGBImageFreePixels(&rgb);
+  }
+
+  nb::dict decoded;
+  decoded["frames"] = frames;
+  decoded["width"] = nb::int_(decoder->image ? decoder->image->width : 0);
+  decoded["height"] = nb::int_(decoder->image ? decoder->image->height : 0);
+  decoded["channels"] = nb::int_(3);
+  decoded["frame_count"] = nb::int_(frames.size());
+  decoded["timescale"] = nb::int_(decoder->timescale);
+  decoded["duration_in_timescales"] = nb::int_(decoder->durationInTimescales);
+  decoded["duration_s"] = nb::float_(decoder->timescale ? static_cast<double>(decoder->durationInTimescales) /
+                                                           static_cast<double>(decoder->timescale)
+                                                     : 0.0);
+  decoded["fps"] = nb::float_(decoder->durationInTimescales && decoder->timescale
+                                  ? static_cast<double>(frames.size()) * static_cast<double>(decoder->timescale) /
+                                        static_cast<double>(decoder->durationInTimescales)
+                                  : 0.0);
+  return decoded;
 }
 #endif
 
@@ -406,5 +594,20 @@ NB_MODULE(rowpack_native, m) {
 #endif
 #if defined(ROWPACK_USE_STB) && defined(ROWPACK_USE_CISTA)
   m.def("jpeg_encode_rgb", &jpeg_encode_rgb_bytes);
+#endif
+#ifdef ROWPACK_USE_LIBAVIF
+  m.def("avif_runtime_info", &avif_runtime_info);
+  m.def(
+      "avif_encode_rgb_sequence",
+      &avif_encode_rgb_sequence,
+      nb::arg("frames"),
+      nb::arg("height"),
+      nb::arg("width"),
+      nb::arg("fps"),
+      nb::arg("quality") = 70,
+      nb::arg("speed") = 6,
+      nb::arg("max_threads") = 1,
+      nb::arg("yuv_format") = "yuv420");
+  m.def("avif_decode_rgb_sequence", &avif_decode_rgb_sequence, nb::arg("payload"), nb::arg("max_threads") = 1);
 #endif
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import mimetypes
 import mmap
 import os
 import warnings
@@ -478,29 +479,46 @@ def serialize_row(
     if payload_format == "cista":
         if native is None:
             raise RowPackError("CISTA RowPack payloads require rowpack_native")
-        data, images = split_row_payload(row)
+        data, images, files = split_row_payload(row)
         extra = dict(data)
         turns = extra.pop("data", [])
+        if files:
+            extra["_rowpack_file_metadata"] = [
+                {"image_index": len(images) + index, **json_file_metadata(file)}
+                for index, file in enumerate(files)
+            ]
+            images = [*images, *(file_payload_to_image_payload(file) for file in files)]
         extra_json = json.dumps(extra, ensure_ascii=False, separators=(",", ":"))
         return native.encode_cista_payload(row_id, turns, images, extra_json)
 
     if payload_format != "json":
         raise ValueError(f"Unsupported RowPack payload_format {payload_format!r}")
 
-    data, image_payloads = split_row_payload(row)
-    image_metadata = [json_image_metadata(image) for image in image_payloads]
-    if image_metadata:
+    data, image_payloads, file_payloads = split_row_payload(row)
+    binary_payloads = [*image_payloads, *file_payloads]
+    if file_payloads:
         data = dict(data)
-        data["_rowpack_image_metadata"] = image_metadata
-    images = [image["bytes"] for image in image_payloads]
+        data["_rowpack_binary_metadata"] = [
+            {"kind": "image", **json_image_metadata(image)}
+            for image in image_payloads
+        ] + [
+            {"kind": "file", **json_file_metadata(file)}
+            for file in file_payloads
+        ]
+    else:
+        image_metadata = [json_image_metadata(image) for image in image_payloads]
+        if image_metadata:
+            data = dict(data)
+            data["_rowpack_image_metadata"] = image_metadata
+    binary_bytes = [item["bytes"] for item in binary_payloads]
     data_bytes = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    image_lengths = [len(image) for image in images]
+    binary_lengths = [len(item) for item in binary_bytes]
 
     chunks = [
-        ROW_PREFIX_STRUCT.pack(len(data_bytes), len(images), row_id),
-        b"".join(length.to_bytes(8, "little") for length in image_lengths),
+        ROW_PREFIX_STRUCT.pack(len(data_bytes), len(binary_bytes), row_id),
+        b"".join(length.to_bytes(8, "little") for length in binary_lengths),
         data_bytes,
-        *images,
+        *binary_bytes,
     ]
     return b"".join(chunks)
 
@@ -517,7 +535,7 @@ def deserialize_row(
         row_id, turns, images, extra_json = native.decode_cista_payload(bytes(payload))
         data = json.loads(extra_json) if extra_json else {}
         data["data"] = turns
-        data["images"] = [normalize_decoded_image(image) for image in images]
+        restore_file_payloads(data, [normalize_decoded_image(image) for image in images])
         data.setdefault("_rowpack", {})["row_id"] = row_id
         return data
 
@@ -534,26 +552,35 @@ def deserialize_row(
     data_start = cursor
     data_stop = data_start + data_json_size
     data = json.loads(bytes(payload[data_start:data_stop]).decode("utf-8"))
+    binary_metadata = data.pop("_rowpack_binary_metadata", None)
     image_metadata = data.pop("_rowpack_image_metadata", [])
     cursor = data_stop
 
     images = []
+    files = []
     for image_index, length in enumerate(image_lengths):
-        metadata = dict(image_metadata[image_index]) if image_index < len(image_metadata) else {}
+        metadata = binary_payload_metadata(binary_metadata, image_metadata, image_index)
+        kind = metadata.pop("kind", "image")
         metadata["bytes"] = bytes(payload[cursor : cursor + length])
-        metadata.setdefault("path", None)
-        images.append(metadata)
+        if kind == "file":
+            files.append(normalize_decoded_file(metadata))
+        else:
+            metadata.setdefault("path", None)
+            images.append(metadata)
         cursor += length
 
     data["images"] = images
+    if files:
+        data["files"] = files
     data.setdefault("_rowpack", {})["row_id"] = row_id
     return data
 
 
-def split_row_payload(row: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    data = {key: value for key, value in row.items() if key != "images"}
+def split_row_payload(row: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    data = {key: value for key, value in row.items() if key not in {"images", "files"}}
     images = [coerce_image_payload(image) for image in row.get("images") or []]
-    return data, images
+    files = [coerce_file_payload(file) for file in row.get("files") or []]
+    return data, images, files
 
 
 def json_image_metadata(image: dict[str, Any]) -> dict[str, Any]:
@@ -569,6 +596,30 @@ def json_image_metadata(image: dict[str, Any]) -> dict[str, Any]:
             continue
         metadata[key] = value
     return metadata
+
+
+def json_file_metadata(file: dict[str, Any]) -> dict[str, Any]:
+    metadata = {}
+    for key, value in file.items():
+        if key == "bytes":
+            continue
+        if key == "path" and value is None:
+            continue
+        metadata[key] = value
+    metadata.setdefault("size", len(file.get("bytes") or b""))
+    metadata.setdefault("mime_type", "application/octet-stream")
+    metadata.setdefault("role", "attachment")
+    return metadata
+
+
+def file_payload_to_image_payload(file: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "bytes": file["bytes"],
+        "height": 0,
+        "width": 0,
+        "channels": 0,
+        "storage": "rowpack_file",
+    }
 
 
 def coerce_image_payload(image: Any) -> dict[str, Any]:
@@ -591,6 +642,42 @@ def coerce_image_payload(image: Any) -> dict[str, Any]:
     }
 
 
+def coerce_file_payload(file: Any) -> dict[str, Any]:
+    if isinstance(file, dict):
+        payload = dict(file)
+        path = payload.get("path")
+        payload["bytes"] = coerce_file_bytes(payload)
+        payload.setdefault("path", str(path) if path is not None else None)
+        if payload.get("name") is None and path is not None:
+            payload["name"] = Path(path).name
+        payload.setdefault("mime_type", guess_mime_type(payload.get("name") or payload.get("path")))
+        payload.setdefault("role", "attachment")
+        payload["size"] = len(payload["bytes"])
+        return payload
+
+    if isinstance(file, (str, os.PathLike, Path)):
+        path = Path(file)
+        data = path.read_bytes()
+        return {
+            "bytes": data,
+            "path": str(path),
+            "name": path.name,
+            "mime_type": guess_mime_type(path.name),
+            "role": "attachment",
+            "size": len(data),
+        }
+
+    data = coerce_file_bytes(file)
+    return {
+        "bytes": data,
+        "path": None,
+        "name": None,
+        "mime_type": "application/octet-stream",
+        "role": "attachment",
+        "size": len(data),
+    }
+
+
 def normalize_decoded_image(image: Any) -> dict[str, Any]:
     if isinstance(image, dict):
         return {
@@ -602,6 +689,56 @@ def normalize_decoded_image(image: Any) -> dict[str, Any]:
             "storage": image.get("storage") or "encoded",
         }
     return {"bytes": bytes(image), "path": None, "height": 0, "width": 0, "channels": 0, "storage": "encoded"}
+
+
+def normalize_decoded_file(file: Any) -> dict[str, Any]:
+    if isinstance(file, dict):
+        payload = dict(file)
+        payload["bytes"] = coerce_file_bytes(payload)
+        payload.setdefault("path", None)
+        payload.setdefault("name", Path(payload["path"]).name if payload.get("path") else None)
+        payload.setdefault("mime_type", guess_mime_type(payload.get("name") or payload.get("path")))
+        payload.setdefault("role", "attachment")
+        payload["size"] = int(payload.get("size") or len(payload["bytes"]))
+        return payload
+    data = coerce_file_bytes(file)
+    return {"bytes": data, "path": None, "name": None, "mime_type": "application/octet-stream", "role": "attachment", "size": len(data)}
+
+
+def binary_payload_metadata(
+    binary_metadata: list[dict[str, Any]] | None,
+    image_metadata: list[dict[str, Any]],
+    index: int,
+) -> dict[str, Any]:
+    if binary_metadata is not None:
+        return dict(binary_metadata[index]) if index < len(binary_metadata) and isinstance(binary_metadata[index], dict) else {}
+    return dict(image_metadata[index]) if index < len(image_metadata) and isinstance(image_metadata[index], dict) else {}
+
+
+def restore_file_payloads(data: dict[str, Any], binary_payloads: list[dict[str, Any]]) -> None:
+    file_metadata = data.pop("_rowpack_file_metadata", [])
+    if not file_metadata:
+        data["images"] = binary_payloads
+        return
+
+    file_indices: set[int] = set()
+    files: list[dict[str, Any]] = []
+    for item in file_metadata:
+        if not isinstance(item, dict):
+            continue
+        metadata = dict(item)
+        image_index = int(metadata.pop("image_index"))
+        if image_index < 0 or image_index >= len(binary_payloads):
+            continue
+        file_indices.add(image_index)
+        file_payload = dict(metadata)
+        file_payload["bytes"] = binary_payloads[image_index]["bytes"]
+        file_payload.setdefault("path", None)
+        files.append(normalize_decoded_file(file_payload))
+
+    data["images"] = [payload for index, payload in enumerate(binary_payloads) if index not in file_indices]
+    if files:
+        data["files"] = files
 
 
 def coerce_image_bytes(image: Any) -> bytes:
@@ -621,6 +758,28 @@ def coerce_image_bytes(image: Any) -> bytes:
         image.save(buffer, format="PNG")
         return buffer.getvalue()
     raise TypeError(f"Unsupported image payload for RowPack: {type(image)!r}")
+
+
+def coerce_file_bytes(file: Any) -> bytes:
+    if isinstance(file, bytes):
+        return file
+    if isinstance(file, bytearray):
+        return bytes(file)
+    if isinstance(file, memoryview):
+        return file.tobytes()
+    if isinstance(file, dict):
+        if file.get("bytes") is not None:
+            return coerce_file_bytes(file["bytes"])
+        if file.get("path") is not None:
+            return Path(file["path"]).read_bytes()
+    raise TypeError(f"Unsupported file payload for RowPack: {type(file)!r}")
+
+
+def guess_mime_type(name_or_path: Any) -> str:
+    if not name_or_path:
+        return "application/octet-stream"
+    guessed, _encoding = mimetypes.guess_type(str(name_or_path))
+    return guessed or "application/octet-stream"
 
 
 class TorchLikeRandom:

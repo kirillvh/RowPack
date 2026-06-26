@@ -14,8 +14,10 @@ if __package__ in {None, ""}:
     if source_root not in sys.path:
         sys.path.insert(0, source_root)
     from rowpack.authoring import MetadataBuilder, RowPackDatasetBuilder
+    from rowpack.video import VideoChunkBuffer
 else:
     from .authoring import MetadataBuilder, RowPackDatasetBuilder
+    from .video import VideoChunkBuffer
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ def run_capture(config: dict[str, Any]) -> int:
             self.latest: dict[str, tuple[int, Any]] = {}
             self.slop_ns = int(float(config.get("sync", {}).get("slop_s", 0.02)) * 1_000_000_000)
             self.row_count = 0
+            self.video_buffers = build_video_buffers(config)
             qos_depth = int(config.get("qos_depth", 10))
 
             for topic in topics:
@@ -102,6 +105,7 @@ def run_capture(config: dict[str, Any]) -> int:
                 _stamp, msg = self.latest[topic.name]
                 if topic.role == "image":
                     images.append(image_message_to_rowpack(builder, topic, msg))
+                    self._try_emit_video_chunk(topic, msg, timestamp_ns)
                 else:
                     sensors[topic.field] = message_to_builtin(msg)
 
@@ -116,7 +120,52 @@ def run_capture(config: dict[str, Any]) -> int:
             if self.row_count % int(config.get("log_every_rows", 100)) == 0:
                 self.get_logger().info(f"RowPack capture wrote {self.row_count} synchronized rows")
 
+        def _try_emit_video_chunk(self, topic: TopicConfig, msg: Any, timestamp_ns: int) -> None:
+            buffer = self.video_buffers.get(topic.field) or self.video_buffers.get(topic.name)
+            if buffer is None:
+                return
+            if hasattr(msg, "format") and hasattr(msg, "data") and not hasattr(msg, "height"):
+                self.get_logger().warning(
+                    f"Video chunking for {topic.name} needs raw sensor_msgs/Image frames; "
+                    "CompressedImage passthrough can be stored with append_video_chunk_row but is not animated here."
+                )
+                return
+
+            raw, height, width, channels = ros_image_to_raw(msg)
+            chunk = buffer.add_frame(
+                timestamp_ns=timestamp_ns,
+                data=raw,
+                height=height,
+                width=width,
+                channels=channels,
+            )
+            if chunk is not None:
+                self._append_video_chunk(chunk)
+
+        def _append_video_chunk(self, chunk: dict[str, Any]) -> None:
+            stream = str(chunk["stream"])
+            chunk_index = int(chunk["chunk_index"])
+            builder.append_video_chunk_row(
+                stream=stream,
+                chunk=chunk,
+                chunk_index=chunk_index,
+                codec=str(chunk.get("codec") or "avif"),
+                mime_type=str(chunk.get("mime_type") or "image/avif"),
+                start_timestamp_ns=int(chunk.get("start_timestamp_ns") or 0),
+                end_timestamp_ns=int(chunk.get("end_timestamp_ns") or 0),
+                frame_count=int(chunk.get("frame_count") or 0),
+                fps=float(chunk["fps"]) if chunk.get("fps") is not None else None,
+            )
+            self.get_logger().info(
+                f"RowPack capture wrote {stream} video chunk {chunk_index} "
+                f"({chunk.get('frame_count')} frames, {len(chunk.get('bytes') or b'')} bytes)"
+            )
+
         def close(self) -> None:
+            for buffer in self.video_buffers.values():
+                chunk = buffer.flush()
+                if chunk is not None:
+                    self._append_video_chunk(chunk)
             builder.finish()
 
     rclpy.init()
@@ -145,9 +194,39 @@ def build_metadata(config: dict[str, Any], topics: list[TopicConfig]) -> Metadat
     metadata.row_field("timestamp_ns", "int64", "Synchronized row timestamp in nanoseconds")
     metadata.row_field("sensors", "json", "Non-image ROS messages converted to JSON-compatible values")
     metadata.row_field("images", "image[]", "Image topics encoded according to image_codec settings")
+    metadata.row_field("files", "file[]", "Generic binary attachments such as AVIF, MP4, calibration files, or logs")
+    if config.get("video_chunks"):
+        metadata.extra("video_chunking", config["video_chunks"])
     for topic in topics:
         metadata.sensor(topic.field, topic.type, topic=topic.name, role=topic.role)
     return metadata
+
+
+def build_video_buffers(config: dict[str, Any]) -> dict[str, VideoChunkBuffer]:
+    buffers: dict[str, VideoChunkBuffer] = {}
+    for item in config.get("video_chunks") or []:
+        key = item.get("field") or item.get("topic") or item.get("stream")
+        if not key:
+            raise ValueError("Each video_chunks entry needs a field, topic, or stream")
+        stream = str(item.get("stream") or item.get("field") or item.get("topic"))
+        buffer = VideoChunkBuffer(
+            stream=stream,
+            chunk_seconds=float(item.get("chunk_seconds", 15.0)),
+            codec=str(item.get("codec", "avif")),
+            encoder=str(item.get("encoder", "ffmpeg")),
+            fps=float(item["fps"]) if item.get("fps") is not None else None,
+            crf=int(item.get("crf", 30)),
+            quality=int(item["quality"]) if item.get("quality") is not None else None,
+            speed=int(item.get("speed", 6)),
+            max_threads=int(item.get("max_threads", 1)),
+            yuv_format=str(item.get("yuv_format", "yuv420")),
+            preset=item.get("preset"),
+            ffmpeg=str(item.get("ffmpeg", "ffmpeg")),
+            native_module_dir=item.get("native_module_dir") or config.get("native_module_dir"),
+            allow_ffmpeg_fallback=bool(item.get("allow_ffmpeg_fallback", False)),
+        )
+        buffers[str(key)] = buffer
+    return buffers
 
 
 def load_message_type(type_spec: str) -> type:

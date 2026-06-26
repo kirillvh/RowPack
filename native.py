@@ -53,8 +53,9 @@ def native_search_paths(native_module_dir: str | None = None) -> list[Path | Non
 
     cwd = Path.cwd()
     module_path = Path(__file__).resolve()
-    package_root = module_path.parents[1] if module_path.parent.name == "rowpack" else module_path.parent
-    for root in dict.fromkeys([cwd, package_root, *cwd.parents]):
+    package_dir = module_path.parent
+    package_root = package_dir.parent if package_dir.name == "rowpack" else package_dir
+    for root in dict.fromkeys([cwd, package_dir, package_root, *cwd.parents]):
         paths.extend(
             [
                 root / "rowpack_build" / "Release",

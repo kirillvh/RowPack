@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from .io import RowPackWriter, coerce_image_bytes
+from .io import RowPackWriter, coerce_file_payload, coerce_image_bytes
 from .native import load_native
 
 
@@ -169,6 +169,7 @@ class RowPackDatasetBuilder:
         *,
         turns: Iterable[dict[str, Any]],
         images: Iterable[Any] = (),
+        files: Iterable[Any] = (),
         extra: dict[str, Any] | None = None,
         name: str | None = None,
         aliases: Iterable[str] | None = None,
@@ -176,6 +177,9 @@ class RowPackDatasetBuilder:
         row = dict(extra or {})
         row["data"] = list(turns)
         row["images"] = [self.encode_image(image) for image in images]
+        encoded_files = [self.encode_file(file) for file in files]
+        if encoded_files:
+            row["files"] = encoded_files
         return self.append_row(row, name=name, aliases=aliases)
 
     def append_sensor_row(
@@ -183,14 +187,76 @@ class RowPackDatasetBuilder:
         sensors: dict[str, Any],
         *,
         images: Iterable[Any] = (),
+        files: Iterable[Any] = (),
         timestamp_ns: int | None = None,
         name: str | None = None,
         aliases: Iterable[str] | None = None,
     ) -> int:
         row = {"sensors": sensors, "images": [self.encode_image(image) for image in images]}
+        encoded_files = [self.encode_file(file) for file in files]
+        if encoded_files:
+            row["files"] = encoded_files
         if timestamp_ns is not None:
             row["timestamp_ns"] = int(timestamp_ns)
         return self.append_row(row, name=name, aliases=aliases)
+
+    def append_file_row(
+        self,
+        files: Iterable[Any],
+        *,
+        extra: dict[str, Any] | None = None,
+        name: str | None = None,
+        aliases: Iterable[str] | None = None,
+    ) -> int:
+        row = dict(extra or {})
+        row["files"] = [self.encode_file(file) for file in files]
+        return self.append_row(row, name=name, aliases=aliases)
+
+    def append_video_chunk_row(
+        self,
+        *,
+        stream: str,
+        chunk: Any,
+        chunk_index: int,
+        codec: str = "avif",
+        mime_type: str = "image/avif",
+        start_timestamp_ns: int | None = None,
+        end_timestamp_ns: int | None = None,
+        frame_count: int | None = None,
+        fps: float | None = None,
+        extra: dict[str, Any] | None = None,
+        name: str | None = None,
+        aliases: Iterable[str] | None = None,
+    ) -> int:
+        existing_file_name = chunk.get("name") if isinstance(chunk, dict) else None
+        file_name = existing_file_name or f"{stream}_chunk_{int(chunk_index):06d}{video_file_extension(codec, mime_type)}"
+        file_payload = self.encode_file(
+            chunk,
+            name=file_name,
+            mime_type=mime_type,
+            role="video_chunk",
+            codec=codec,
+            stream=stream,
+            chunk_index=int(chunk_index),
+            start_timestamp_ns=start_timestamp_ns,
+            end_timestamp_ns=end_timestamp_ns,
+            frame_count=frame_count,
+            fps=fps,
+        )
+        row = dict(extra or {})
+        row["files"] = [file_payload]
+        row["_rowpack_continuation"] = {
+            "kind": "video_chunk",
+            "stream": stream,
+            "chunk_index": int(chunk_index),
+            "is_continuation": True,
+        }
+        if start_timestamp_ns is not None:
+            row["timestamp_ns"] = int(start_timestamp_ns)
+            row["_rowpack_continuation"]["start_timestamp_ns"] = int(start_timestamp_ns)
+        if end_timestamp_ns is not None:
+            row["_rowpack_continuation"]["end_timestamp_ns"] = int(end_timestamp_ns)
+        return self.append_row(row, name=name or f"{stream}::chunk_{int(chunk_index):06d}", aliases=aliases)
 
     def encode_image(
         self,
@@ -254,6 +320,30 @@ class RowPackDatasetBuilder:
             }
 
         raise ValueError(f"Unsupported RowPack image codec {codec!r}")
+
+    def encode_file(
+        self,
+        file: Any,
+        *,
+        name: str | None = None,
+        mime_type: str | None = None,
+        role: str = "attachment",
+        codec: str | None = None,
+        **metadata: Any,
+    ) -> dict[str, Any]:
+        payload = coerce_file_payload(file)
+        if name is not None:
+            payload["name"] = name
+        if mime_type is not None:
+            payload["mime_type"] = mime_type
+        payload["role"] = role
+        if codec is not None:
+            payload["codec"] = codec
+        for key, value in metadata.items():
+            if value is not None:
+                payload[key] = value
+        payload["size"] = len(payload["bytes"])
+        return payload
 
     def native(self):
         if self._native is None:
@@ -325,3 +415,12 @@ def validate_raw_shape(
     if len(raw) != expected:
         raise ValueError(f"Raw image byte length {len(raw)} does not match height*width*channels={expected}")
     return raw, int(height), int(width), int(channels)
+
+
+def video_file_extension(codec: str, mime_type: str | None = None) -> str:
+    normalized = codec.lower()
+    if normalized in {"avif", "av1_avif"} or mime_type == "image/avif":
+        return ".avif"
+    if normalized in {"h264", "h.264", "avc", "h265", "h.265", "hevc"} or mime_type == "video/mp4":
+        return ".mp4"
+    return ".bin"

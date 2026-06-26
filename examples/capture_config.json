@@ -6,6 +6,19 @@
   "image_codec": "jpeg_lossy",
   "jpeg_quality": 90,
   "sync": {"slop_s": 0.02},
+  "video_chunks": [
+    {
+      "field": "front_camera",
+      "stream": "front_camera",
+      "chunk_seconds": 15,
+      "codec": "avif",
+      "encoder": "auto",
+      "crf": 30,
+      "quality": 70,
+      "speed": 6,
+      "max_threads": 1
+    }
+  ],
   "topics": [
     {
       "name": "/camera/front",
