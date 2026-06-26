@@ -686,9 +686,8 @@ for row_id, text_pairs, images in rows:
 ## Benchmark
 
 The benchmark scripts used to generate the published `mm_infographic_vqa`
-charts are part of a sister repository used to demonstrate rowpack usage in a VLA,
-and it will be published soon. 
-However this repository includes a simplified RowPack-only benchmark as follows:
+charts are part of the [nanoVLM](https://github.com/kirillvh/nanoVLM) sister repository used to demonstrate rowpack usage in a VLM application. 
+This repository also includes a simplified self contained benchmark as follows:
 
 ```bash
 python3 examples/quick_benchmark.py \
