@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from .audio import encode_audio_payload
 from .io import RowPackWriter, coerce_file_payload, coerce_image_bytes
 from .native import load_native
 
@@ -76,6 +77,10 @@ class MetadataBuilder:
         self.values["image_codec_settings"] = {"codec": codec, **options}
         return self
 
+    def audio_codec(self, codec: str, **options: Any) -> "MetadataBuilder":
+        self.values["audio_codec_settings"] = {"codec": codec, **options}
+        return self
+
     def search_index(
         self,
         name: str,
@@ -122,6 +127,11 @@ class RowPackDatasetBuilder:
         block_codec: str = "lzav_hi",
         image_codec: str = "encoded",
         jpeg_quality: int = 90,
+        audio_codec: str = "encoded",
+        audio_backend: str = "auto",
+        opus_bitrate: str = "64k",
+        flac_compression_level: int = 5,
+        audio_tool: str | None = None,
         native_module_dir: str | None = None,
         overwrite: bool = False,
     ):
@@ -134,9 +144,23 @@ class RowPackDatasetBuilder:
             "image_codec_settings",
             {"codec": image_codec, "jpeg_quality": jpeg_quality} if image_codec == "jpeg_lossy" else {"codec": image_codec},
         )
+        audio_settings = {
+            "codec": audio_codec,
+            "backend": audio_backend,
+            "opus_bitrate": opus_bitrate,
+            "flac_compression_level": flac_compression_level,
+        }
+        if audio_tool:
+            audio_settings["audio_tool"] = "rowpack_audio_tool"
+        metadata_dict.setdefault("audio_codec_settings", audio_settings)
 
         self.image_codec = image_codec
         self.jpeg_quality = jpeg_quality
+        self.audio_codec = audio_codec
+        self.audio_backend = audio_backend
+        self.opus_bitrate = opus_bitrate
+        self.flac_compression_level = flac_compression_level
+        self.audio_tool = audio_tool
         self.native_module_dir = native_module_dir
         self._native = None
         self.writer = RowPackWriter(
@@ -210,6 +234,21 @@ class RowPackDatasetBuilder:
     ) -> int:
         row = dict(extra or {})
         row["files"] = [self.encode_file(file) for file in files]
+        return self.append_row(row, name=name, aliases=aliases)
+
+    def append_audio_row(
+        self,
+        audios: Iterable[Any],
+        *,
+        codec: str | None = None,
+        extra: dict[str, Any] | None = None,
+        name: str | None = None,
+        aliases: Iterable[str] | None = None,
+        **audio_options: Any,
+    ) -> int:
+        row = dict(extra or {})
+        row["files"] = [self.encode_audio(audio, codec=codec, **audio_options) for audio in audios]
+        row["_rowpack_audio"] = {"kind": "audio", "codec": codec or self.audio_codec}
         return self.append_row(row, name=name, aliases=aliases)
 
     def append_video_chunk_row(
@@ -344,6 +383,34 @@ class RowPackDatasetBuilder:
                 payload[key] = value
         payload["size"] = len(payload["bytes"])
         return payload
+
+    def encode_audio(
+        self,
+        audio: Any,
+        *,
+        codec: str | None = None,
+        backend: str | None = None,
+        opus_bitrate: str | None = None,
+        flac_compression_level: int | None = None,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        name: str | None = None,
+        **metadata: Any,
+    ) -> dict[str, Any]:
+        return encode_audio_payload(
+            audio,
+            codec=codec or self.audio_codec,
+            backend=backend or self.audio_backend,
+            opus_bitrate=opus_bitrate or self.opus_bitrate,
+            flac_compression_level=(
+                self.flac_compression_level if flac_compression_level is None else flac_compression_level
+            ),
+            sample_rate=sample_rate,
+            channels=channels,
+            name=name,
+            audio_tool=self.audio_tool,
+            **metadata,
+        )
 
     def native(self):
         if self._native is None:

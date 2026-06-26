@@ -49,6 +49,38 @@ For unusual build layouts, set the environment variable explicitly:
 export ROWPACK_NATIVE_DIR=/path/to/rowpack/build
 ```
 
+## Rust Audio Helper
+
+RowPack's Python audio API can use a bundled Rust helper for codec work:
+
+- `flacenc-rs` writes standard FLAC streams for lossless audio payloads.
+- `opus-rs` writes Opus packets into RowPack's small
+  `rowpack_opus_packets` container. This is intentionally not an Ogg/Opus
+  file; it is a training-friendly packet stream with sample rate, channels,
+  frame size, sample count, and packet count carried in RowPack metadata.
+
+Build it from the RowPack source directory:
+
+```bash
+cargo build --manifest-path tools/rowpack_audio_tool/Cargo.toml --release
+```
+
+Python APIs discover the helper in these places:
+
+- `--audio-tool`, when an example accepts it
+- `audio_tool=...`, when calling `encode_audio_payload`,
+  `decode_audio_payload`, or `RowPackDatasetBuilder`
+- `ROWPACK_AUDIO_TOOL`
+- the normal `PATH`
+- `tools/rowpack_audio_tool/target/release/`
+- `tools/rowpack_audio_tool/target/debug/`
+
+`backend="auto"` uses the Rust helper when it is found and falls back to
+`ffmpeg` otherwise. `backend="rust"` requires the helper and raises a direct
+error if it cannot be found. Arbitrary source files such as OGG/Vorbis still
+use `ffmpeg` for the first normalization step to signed 16-bit PCM before the
+Rust helper encodes FLAC or Opus.
+
 ## Native libavif Backend
 
 RowPack ships a vendored `third_party/libavif` checkout, but native AVIF

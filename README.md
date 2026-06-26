@@ -29,6 +29,8 @@ RowPack aims at a different hot path: training-time row/window access.
   - [QOI](https://github.com/phoboslab/qoi) (MIT) for fast lossless image decoding and storage.
   - [STB](https://github.com/nothings/stb) (MIT) image decode and JPEG writing.
   - [libavif](https://github.com/AOMediaCodec/libavif) (Apache & other permissive) for small size video using fastest [rav1e](https://github.com/xiph/rav1e) (BSD2) encoder and fastest [dav1d](https://code.videolan.org/videolan/dav1d) (BSD2) decoder.
+  - [flacenc-rs](https://github.com/yotarok/flacenc-rs) (Apache2) for bundled lossless FLAC audio.
+  - [opus-rs](https://crates.io/crates/opus-rs) (BSD3) for bundled pure-Rust lossy Opus audio packets.
 - The Python loader can hand back ready-to-shape byte buffers, so users can go
   straight to `np.frombuffer(...).reshape(h, w, c)`, or let the
   [PyTorch dataloader](torch_dataset.py) take care of batching.
@@ -379,6 +381,87 @@ python3 examples/create_avif_chunks.py \
   --input examples/sampleavif.avif \
   --output build/examples/sample_avif_chunks.rowpack \
   --overwrite
+```
+
+### Audio Payloads
+
+RowPack can store audio as first-class multimodal data too. Audio payloads use
+the same `files[]` lane as video chunks, with `role="audio"` plus codec,
+sample-rate, channel, duration, bitrate, and backend metadata. Older RowPack
+readers still see normal binary attachments; audio-aware code can call
+`decode_audio_payload(...)` to get interleaved PCM bytes.
+
+RowPack has two audio backends:
+
+- `backend="rust"` uses the bundled `tools/rowpack_audio_tool` helper.
+  `flacenc-rs` writes standard FLAC bytes for lossless audio. `opus-rs` gives
+  us fast Opus packets; RowPack stores those in a tiny self-described packet
+  stream with `container="rowpack_opus_packets"`.
+- `backend="ffmpeg"` writes standard FLAC and Ogg/Opus files through the
+  system ffmpeg executable. This is still handy when you want maximum external
+  tool compatibility.
+
+Build the Rust helper once:
+
+```bash
+cargo build --manifest-path tools/rowpack_audio_tool/Cargo.toml --release
+```
+
+`backend="auto"` uses the Rust helper when it can find it, otherwise it falls
+back to `ffmpeg`. If your build lives somewhere unusual, set
+`ROWPACK_AUDIO_TOOL` or pass `--audio-tool`.
+
+Run the audio example:
+
+```bash
+cargo build --manifest-path tools/rowpack_audio_tool/Cargo.toml --release
+python3 examples/create_audio_rowpack.py \
+  --input examples/sample_Into_the_Oceans_and_the_Air.ogg \
+  --output build/examples/audio_demo.rowpack \
+  --backend rust \
+  --overwrite
+```
+
+The example writes three rows: the source OGG/Vorbis bytes, a FLAC lossless
+transcode, and an Opus lossy transcode. It then decodes each row back to PCM as
+a correctness check:
+
+| backend | variant | stored size | codec/container | decoded PCM |
+| --- | --- | ---: | --- | ---: |
+| rust | original_encoded | 1,679.1 KiB | Vorbis/source | 22,626.8 KiB |
+| rust | flac_lossless | 11,729.1 KiB | FLAC | 22,626.8 KiB |
+| rust | opus_lossy | 1,039.1 KiB | RowPack Opus packets | 24,627.8 KiB |
+| ffmpeg | flac_lossless | 23,187.7 KiB | FLAC | 22,626.8 KiB |
+| ffmpeg | opus_lossy | 1,027.3 KiB | Ogg/Opus | 24,627.8 KiB |
+
+That result is exactly what we should expect from this sample: the source is
+already a lossy Vorbis file, so FLAC preserves the decoded waveform but cannot
+recover the original uncompressed recording size. FLAC is the right choice for
+lossless storage of raw/PCM-like sensor audio. Opus is the compact lossy choice
+for speech, music, and long robot episode audio.
+
+Programmatic use:
+
+```python
+from rowpack import RowPackDatasetBuilder, RowPackReader, decode_audio_payload
+
+with RowPackDatasetBuilder(
+    "build/examples/audio.rowpack",
+    payload_format="json",
+    block_codec="none",
+    audio_backend="rust",
+) as builder:
+    builder.append_audio_row(
+        ["examples/sample_Into_the_Oceans_and_the_Air.ogg"],
+        codec="opus_lossy",
+        opus_bitrate="64k",
+        name="ocean_audio",
+    )
+
+with RowPackReader("build/examples/audio.rowpack") as reader:
+    audio = reader.read_row(0)["files"][0]
+    pcm = decode_audio_payload(audio)
+    # pcm["bytes"] is interleaved signed 16-bit PCM.
 ```
 
 AVIF is an image container that can also hold image sequences/animations. For

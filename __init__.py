@@ -1,3 +1,11 @@
+from .audio import (
+    AudioCodecError,
+    decode_audio_payload,
+    encode_audio_payload,
+    ffmpeg_available,
+    probe_audio_path,
+    rust_audio_tool_available,
+)
 from .authoring import MetadataBuilder, RowPackDatasetBuilder
 from .dataset import NativeCistaVQARows, RowPackRows
 from .io import RowPackError, RowPackReader, RowPackWriter
@@ -16,6 +24,7 @@ from .video import (
 
 __all__ = [
     "DocumentIndexBuilder",
+    "AudioCodecError",
     "FfmpegVideoEncoder",
     "LibAvifVideoDecoder",
     "LibAvifVideoEncoder",
@@ -29,8 +38,13 @@ __all__ = [
     "RowPackWriter",
     "VideoChunkBuffer",
     "VideoFrame",
+    "decode_audio_payload",
     "decode_avif_chunk",
+    "encode_audio_payload",
+    "ffmpeg_available",
     "libavif_available",
     "libavif_decode_available",
+    "probe_audio_path",
+    "rust_audio_tool_available",
     "NativeCistaVQARows",
 ]
