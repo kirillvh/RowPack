@@ -18,15 +18,17 @@ RowPack aims at a different hot path: training-time row/window access.
 
 - Row-major layout enables speed by matching random-access shuffle training with better throughput than column-major
   Parquet files.
-- Header-only C++ with Python bindings and PyTorch dataloader integration.
+- Captures dataset from ROS topic, webcam or other device and compresses it tightly.
+- Portable and comes with Python bindings and PyTorch dataloader integration.
 - Converters to port Parquet or JSONL files to Rowpack format. Includes method to chunk long inputs across multiple rows with searchable index.
 - Friendly examples to get you started quickly.
-- Modern libraries for speed and utility:
+- Modern libraries for speed and utility, bundled for portability and verified compatibility:
   - [nanobind](https://github.com/wjakob/nanobind) (BSD3) for fast Python bindings.
   - [CISTA](https://github.com/felixguendling/cista) (MIT) cast-mode payloads avoid rebuilding large Python dictionaries.
   - [LZAV](https://github.com/avaneev/lzav) (MIT) block compression gives good size reduction with very fast decompression.
   - [QOI](https://github.com/phoboslab/qoi) (MIT) for fast lossless image decoding and storage.
   - [STB](https://github.com/nothings/stb) (MIT) image decode and JPEG writing.
+  - [libavif](https://github.com/AOMediaCodec/libavif) (Apache & other permissive) for small size video using fastest [rav1e](https://github.com/xiph/rav1e) (BSD2) encoder and fastest [dav1d](https://code.videolan.org/videolan/dav1d) decoder.
 - The Python loader can hand back ready-to-shape byte buffers, so users can go
   straight to `np.frombuffer(...).reshape(h, w, c)`, or let the
   [PyTorch dataloader](torch_dataset.py) take care of batching.
