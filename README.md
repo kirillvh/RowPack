@@ -1,12 +1,10 @@
-# RowPack
+# RowPack: Faster than Parquet but compression as good as its best, with image/video encoding for dataset capture built-in
 
 ![Training throughput](docs/images/mm_infographic_vqa_samples_per_s.png)
 
 ![Input file size](docs/images/mm_infographic_vqa_input_mib.png)
 
 ![Webcam RowPack size](docs/images/webcam_storage_rowpack_size_mib.png)
-
-## Faster than Parquet but compression as good as its best and image/video encoding built-in
 
 RowPack is a row-major dataset container for multimodal training workloads.
 It is built for the pattern VLM training usually wants: sample a random window,
