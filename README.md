@@ -28,7 +28,7 @@ RowPack aims at a different hot path: training-time row/window access.
   - [LZAV](https://github.com/avaneev/lzav) (MIT) block compression gives good size reduction with very fast decompression.
   - [QOI](https://github.com/phoboslab/qoi) (MIT) for fast lossless image decoding and storage.
   - [STB](https://github.com/nothings/stb) (MIT) image decode and JPEG writing.
-  - [libavif](https://github.com/AOMediaCodec/libavif) (Apache & other permissive) for small size video using fastest [rav1e](https://github.com/xiph/rav1e) (BSD2) encoder and fastest [dav1d](https://code.videolan.org/videolan/dav1d) decoder.
+  - [libavif](https://github.com/AOMediaCodec/libavif) (Apache & other permissive) for small size video using fastest [rav1e](https://github.com/xiph/rav1e) (BSD2) encoder and fastest [dav1d](https://code.videolan.org/videolan/dav1d) (BSD2) decoder.
 - The Python loader can hand back ready-to-shape byte buffers, so users can go
   straight to `np.frombuffer(...).reshape(h, w, c)`, or let the
   [PyTorch dataloader](torch_dataset.py) take care of batching.
