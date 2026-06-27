@@ -19,7 +19,10 @@ RowPack aims at a different hot path: training-time row/window throughput, small
 - Row-major layout enables speed by matching random-access shuffle training with better throughput than column-major
   Parquet files.
 - Captures dataset from ROS topic, webcam or other device and compresses it tightly.
-- Portable
+- Multimodal supporting Image, Video, Audio, Text and general binary.
+- Built-in compression and format encoding with options for Lossless and Lossy.
+    - Compressed AVIF dataset capture at 41FPS (90x160 resolution) benchmarked.
+- Portable.
 - C++, Python bindings and [PyTorch dataloader](torch_dataset.py) integration.
 - Converters to port Parquet or JSONL files to Rowpack format. Includes method to chunk long inputs across multiple rows with searchable index.
 - Friendly examples to get you started quickly.
@@ -34,9 +37,8 @@ RowPack aims at a different hot path: training-time row/window throughput, small
   - [opus-rs](https://crates.io/crates/opus-rs) (BSD3) for bundled pure-Rust lossy Opus audio packets.
 
 In the current `mm_infographic_vqa` random-block benchmark, RowPack with LZAV
-high-ratio blocks compresses close to Parquet GZIP/Brotli size while keeping
-throughput near the uncompressed row-major baseline and well ahead of the
-slower Parquet codecs.
+block compression and JPEG encoding achieves the highest throughput and smallest filesize,
+surpassing Parquet with any compression and encoding option.
 
 ## File Layout Preview
 
@@ -256,8 +258,8 @@ together.
 
 A parallel converter script is available for large scale JSONL conversions, and
 the benchmark script reports both creation speed and training-style read speed.
-Creation speed is nice, but read speed is the number to optimize for LLM/VLM
-training.
+Take care to optimize rows-per-block and split-max-chars for read speed during LLM/VLM training and
+other parameters for conversion speed.
 
 ```bash
 python3 benchmarks/benchmark_books_jsonl_conversion.py \
@@ -672,12 +674,6 @@ read+decode throughput for this 443-frame capture:
 | jpeg_lossy_frames | 652.1 frames/s | 647.2 frames/s |
 | avif_video_chunks | 163.6 frames/s | 162.4 frames/s |
 
-That is a useful caution: this sample is small enough, and the SSD/cache stack
-fast enough, that disk pressure does not dominate the RGB-ready loader path.
-To expose the classic "smaller compressed file beats huge raw file" effect, use
-longer captures, higher resolution, many episodes, or a platform-specific true
-page-cache flush. The eviction file is only benchmark pressure data; put it in
-an ignored result directory and remove it when you are done.
 
 ![Webcam cold-cache read and decode throughput](docs/images/webcam_storage_cold64g_read_decode_frames_per_s.png)
 
@@ -727,7 +723,7 @@ topics, then run it on a ROS2 machine:
 python3 -m rowpack.ros2_capture --config examples/capture_config.json
 ```
 
-The first implementation assumes topic timestamps are already synchronized
+The current implementation assumes topic timestamps are already synchronized
 within `sync.slop_s`. When all configured topics have arrived, it writes one
 row containing JSON-compatible sensor values and any image payloads.
 
