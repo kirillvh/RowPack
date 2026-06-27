@@ -69,7 +69,7 @@ RowPack file, current v0.1 layout
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-For the exact meaning of `H`, `B`, `M`, `BI`, `RI`, JSON rows, and CISTA rows,
+For the exact definitions of `H`, `B`, `M`, `BI`, `RI`, JSON rows, and CISTA rows,
 see [Detailed Format](#detailed-format).
 
 ## Build
