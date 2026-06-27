@@ -1,23 +1,26 @@
 # RowPack: Faster than Parquet but compression as good as its best, with image/video encoding for dataset capture built-in
 
 ![Size Vs Throughput](docs/images/size_vs_throughput.png)
-
+Image sequence store choices.
 ![Webcam RowPack size](docs/images/webcam_storage_rowpack_size_mib.png)
 
 RowPack is a row-major dataset container for multimodal training workloads.
 It is built for the pattern machine learning usually wants: sample a random window,
 read a small block of neighboring rows, decode media (images, videos, audio), get text, and feed
-the batch without spending most of the step waiting on the loader.
+the batch without getting bottlenecked by the loader. In addition to row-major formatting, built-in 
+strong&fast compression also helps with throughput because modern CPU's tend to be a lot faster than
+SSD's so decompressing a small file can work out faster than reading a large raw format file.
 
 Parquet is excellent for analytics, column scans, and ecosystem compatibility.
-RowPack aims at a different hot path: training-time row/window access and capturing compressed datasets.
+RowPack aims at a different hot path: training-time row/window throughput, small size and capturing compressed datasets.
 
 ## Why It Is Useful
 
 - Row-major layout enables speed by matching random-access shuffle training with better throughput than column-major
   Parquet files.
 - Captures dataset from ROS topic, webcam or other device and compresses it tightly.
-- Portable and comes with Python bindings and PyTorch dataloader integration.
+- Portable
+- C++, Python bindings and [PyTorch dataloader](torch_dataset.py) integration.
 - Converters to port Parquet or JSONL files to Rowpack format. Includes method to chunk long inputs across multiple rows with searchable index.
 - Friendly examples to get you started quickly.
 - Modern libraries for speed and utility, bundled for portability and verified compatibility:
@@ -29,9 +32,6 @@ RowPack aims at a different hot path: training-time row/window access and captur
   - [libavif](https://github.com/AOMediaCodec/libavif) (Apache & other permissive) for small size video using fastest [rav1e](https://github.com/xiph/rav1e) (BSD2) encoder and fastest [dav1d](https://code.videolan.org/videolan/dav1d) (BSD2) decoder.
   - [flacenc-rs](https://github.com/yotarok/flacenc-rs) (Apache2) for bundled lossless FLAC audio.
   - [opus-rs](https://crates.io/crates/opus-rs) (BSD3) for bundled pure-Rust lossy Opus audio packets.
-- The Python loader can hand back ready-to-shape byte buffers, so users can go
-  straight to `np.frombuffer(...).reshape(h, w, c)`, or let the
-  [PyTorch dataloader](torch_dataset.py) take care of batching.
 
 In the current `mm_infographic_vqa` random-block benchmark, RowPack with LZAV
 high-ratio blocks compresses close to Parquet GZIP/Brotli size while keeping
@@ -788,9 +788,12 @@ python3 examples/read_rowpack.py --input build/examples/robot_demo.rowpack
 
 PyTorch list-file loader:
 
+The Python loader can hand back ready-to-shape byte buffers, so users can go
+  straight to `np.frombuffer(...).reshape(h, w, c)`, or let the dataset loader feed batches directly.
+
 ```python
 from torch.utils.data import DataLoader
-from rowpack import RowPackBlockDataset, RowPackLoaderState
+from rowpack import RowPackBlockDataset, RowPackLoaderState, keep_rows_collate
 
 dataset = RowPackBlockDataset(
     "data/variants/mm_infographic_vqa_rowpack/rowpacks.txt",
@@ -799,8 +802,13 @@ dataset = RowPackBlockDataset(
     state=RowPackLoaderState(file_index=0, block_index=0, seed=123),
 )
 
-loader = DataLoader(dataset, batch_size=16, num_workers=2, collate_fn=lambda batch: batch)
-
+loader = DataLoader(
+    dataset,
+    batch_size=16,
+    num_workers=2,
+    collate_fn=keep_rows_collate,
+)
+...
 for batch in loader:
     row_id, text_pairs, images = batch[0]
     ...
@@ -811,6 +819,24 @@ mode, `file_index` and `block_index` are the exact next list line and block. In
 `shuffle` mode, those two values are deterministic counters mixed with `seed`
 to choose a reproducible pseudo-random RowPack file and block. Rows are always
 read sequentially inside a selected block.
+
+`keep_rows_collate` is a tiny named function that returns the batch unchanged.
+It is safer than a lambda when `num_workers > 0`, because PyTorch worker
+processes need the collate function to be picklable on Windows and in spawn
+based multiprocessing contexts.
+
+Block reuse happens below the collate function. `RowPackBlockDataset` schedules
+whole RowPack blocks, assigns each block to one worker, and yields rows
+sequentially from that block. The reader caches the decompressed block, so a
+64-row block feeding four 16-sample batches is decompressed once by that worker,
+not once per sample.
+
+For real training, keep normal PyTorch prefetching enabled with worker
+processes, `pin_memory=True` when useful, and a warmup iterator. That lets CPU
+loading and image decode overlap with GPU work. For loader benchmarks that
+want visible load/decode cost instead of hidden overlap, use `num_workers=0`
+or run a dedicated loader-only benchmark and report the worker/prefetch
+settings.
 
 Fast VQA iteration without `DataLoader`:
 

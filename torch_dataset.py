@@ -22,6 +22,16 @@ ReadMode = Literal["sequential", "shuffle", "random"]
 ReturnFormat = Literal["row", "native_vqa", "row_bytes"]
 
 
+def keep_rows_collate(batch):
+    """Return RowPack samples unchanged for simple PyTorch DataLoader examples.
+
+    This is intentionally a named top-level function instead of a lambda so it
+    remains picklable when DataLoader uses worker processes.
+    """
+
+    return batch
+
+
 @dataclass
 class RowPackLoaderState:
     """Reproducible block-stream cursor.

@@ -10,7 +10,7 @@ from .authoring import MetadataBuilder, RowPackDatasetBuilder
 from .dataset import NativeCistaVQARows, RowPackRows
 from .io import RowPackError, RowPackReader, RowPackWriter
 from .search_index import DocumentIndexBuilder
-from .torch_dataset import RowPackBlockDataset, RowPackLoaderState
+from .torch_dataset import RowPackBlockDataset, RowPackLoaderState, keep_rows_collate
 from .video import (
     FfmpegVideoEncoder,
     LibAvifVideoDecoder,
@@ -47,4 +47,5 @@ __all__ = [
     "probe_audio_path",
     "rust_audio_tool_available",
     "NativeCistaVQARows",
+    "keep_rows_collate",
 ]
