@@ -1,7 +1,7 @@
 # RowPack: Faster than Parquet but compression as good as its best, with image/video encoding for dataset capture built-in
 
 ![Size Vs Throughput](docs/images/size_vs_throughput.png)
-Image sequence store choices.
+Image sequence store choices:
 ![Webcam RowPack size](docs/images/webcam_storage_rowpack_size_mib.png)
 
 RowPack is a row-major dataset container for multimodal training workloads.
