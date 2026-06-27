@@ -644,9 +644,7 @@ raw frames or 22.99 MiB independent JPEG frames. For dataset publishing,
 robotics logs, and VLA episodes, that can be the difference between "too large
 to move around" and "easy to share and iterate on."
 
-
-![Webcam compression ratio](docs/images/webcam_storage_compression_ratio_x.png)
-
+The Read + Decode performance on 480x640 was as follows:
 ![Webcam read and decode throughput](docs/images/webcam_storage_read_decode_frames_per_s.png)
 
 For a more skeptical readback pass, reuse the existing RowPacks and stream a
@@ -688,27 +686,6 @@ with RowPackReader("build/examples/webcam_avif.rowpack") as reader:
     decoded = decode_avif_chunk(avif_file, max_threads=4)
     first_frame = decoded["frames"][0]  # RGB bytes, shape is height x width x 3
 ```
-
-## C++ Authoring
-
-The C++ writer is header-only and mirrors the Python writer: rows accumulate in
-a pending block, the block is optionally LZAV-compressed, and indexes plus
-metadata are written when `finish()` is called.
-
-The example is [examples/cpp_writer_smoke.cpp](examples/cpp_writer_smoke.cpp)
-and is built by default:
-
-```bash
-./build/rowpack_cpp_writer_smoke --output build/examples/cpp_writer_smoke.rowpack
-```
-
-It writes one CISTA row with a JPEG image, reopens the file, and prints the
-same kind of summary as the Python examples.
-
-Use [include/rowpack/rowpack.hpp](include/rowpack/rowpack.hpp) for the reader/writer and
-[include/rowpack/image_codecs.hpp](include/rowpack/image_codecs.hpp) when you want QOI or STB JPEG
-helpers from C++. Define `ROWPACK_IMAGE_CODECS_IMPLEMENTATION` in exactly one
-`.cpp` file that uses those codec helpers.
 
 ## ROS2 Capture
 
@@ -773,6 +750,27 @@ The script uses synthetic RGB frames and records unsupported codec backends as
 errors in the summary instead of stopping the whole benchmark. Some ffmpeg
 builds can encode AV1 but cannot mux AVIF; those systems should use H.264/H.265
 for the benchmark until an AVIF-capable ffmpeg or libavif backend is available.
+
+## C++ Authoring
+
+The C++ writer is header-only and mirrors the Python writer: rows accumulate in
+a pending block, the block is optionally LZAV-compressed, and indexes plus
+metadata are written when `finish()` is called.
+
+The example is [examples/cpp_writer_smoke.cpp](examples/cpp_writer_smoke.cpp)
+and is built by default:
+
+```bash
+./build/rowpack_cpp_writer_smoke --output build/examples/cpp_writer_smoke.rowpack
+```
+
+It writes one CISTA row with a JPEG image, reopens the file, and prints the
+same kind of summary as the Python examples.
+
+Use [include/rowpack/rowpack.hpp](include/rowpack/rowpack.hpp) for the reader/writer and
+[include/rowpack/image_codecs.hpp](include/rowpack/image_codecs.hpp) when you want QOI or STB JPEG
+helpers from C++. Define `ROWPACK_IMAGE_CODECS_IMPLEMENTATION` in exactly one
+`.cpp` file that uses those codec helpers.
 
 ## Read From Python
 
