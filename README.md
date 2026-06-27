@@ -5,12 +5,12 @@
 ![Webcam RowPack size](docs/images/webcam_storage_rowpack_size_mib.png)
 
 RowPack is a row-major dataset container for multimodal training workloads.
-It is built for the pattern VLM training usually wants: sample a random window,
-read a small block of neighboring rows, decode images, tokenize text, and feed
+It is built for the pattern machine learning usually wants: sample a random window,
+read a small block of neighboring rows, decode media (images, videos, audio), get text, and feed
 the batch without spending most of the step waiting on the loader.
 
 Parquet is excellent for analytics, column scans, and ecosystem compatibility.
-RowPack aims at a different hot path: training-time row/window access.
+RowPack aims at a different hot path: training-time row/window access and capturing compressed datasets.
 
 ## Why It Is Useful
 
@@ -37,6 +37,38 @@ In the current `mm_infographic_vqa` random-block benchmark, RowPack with LZAV
 high-ratio blocks compresses close to Parquet GZIP/Brotli size while keeping
 throughput near the uncompressed row-major baseline and well ahead of the
 slower Parquet codecs.
+
+## File Layout Preview
+
+At a glance, a RowPack file is a small table of contents, followed by row-major
+data blocks, then metadata and indexes:
+
+```text
+RowPack file, current v0.1 layout
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ H: fixed 128-byte binary header                                      │
+├──────────────────────────────────────────────────────────────────────┤
+│ B0: row-major data block                                             │
+│     uncompressed: R0 | R1 | R2 | ...                                 │
+│     -or-                                                             │
+│     compressed:   LZAV(R0 | R1 | R2 | ...)                           │
+├──────────────────────────────────────────────────────────────────────┤
+│ B1: row-major data block                                             │
+│     compressed or uncompressed                                       │
+├──────────────────────────────────────────────────────────────────────┤
+│ ...                                                                  │
+├──────────────────────────────────────────────────────────────────────┤
+│ M: file-level JSON metadata                                          │
+├──────────────────────────────────────────────────────────────────────┤
+│ BI: block index, one fixed-size record per block                     │
+├──────────────────────────────────────────────────────────────────────┤
+│ RI: row index, one fixed-size record per row                         │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+For the exact meaning of `H`, `B`, `M`, `BI`, `RI`, JSON rows, and CISTA rows,
+see [Detailed Format](#detailed-format).
 
 ## Build
 
@@ -797,6 +829,186 @@ for row_id, text_pairs, images in rows:
     # image["bytes"] is packed RGB when native STB/QOI decode succeeds.
     # Use np.frombuffer(image["bytes"], dtype=np.uint8).reshape(h, w, c).
 ```
+
+## Detailed Format
+
+The current RowPack format is version `0.1`. The binary header also stores
+major version `0` and minor version `1`, so readers can reject incompatible
+future major versions before touching payload data. Multi-byte integer fields
+are little-endian.
+
+Compact view:
+
+```text
+===============================
+| H | B0 | B1 | ... | BK | M | BI | RI |
+===============================
+```
+
+The blocks `B0..BK` contain row payloads in row order. If block compression is
+enabled, each block is compressed as a unit, so rows are sliced after the block
+is decompressed.
+
+### H: Header
+
+`H` is a fixed 128-byte binary header. It is the file's table of contents:
+
+```text
+magic              8 bytes   b"ROWPACK\0"
+major              2 bytes   binary format major version
+minor              2 bytes   binary format minor version
+header_size        4 bytes   currently 128
+flags              8 bytes   e.g. uncompressed-file flag
+row_count          8 bytes   total rows
+block_count        8 bytes   total blocks
+data_offset        8 bytes   where block data starts, currently 128
+metadata_offset    8 bytes   byte offset of M
+metadata_size      8 bytes   byte length of M
+block_index_offset 8 bytes   byte offset of BI
+block_index_size   8 bytes   byte length of BI
+row_index_offset   8 bytes   byte offset of RI
+row_index_size     8 bytes   byte length of RI
+reserved          32 bytes   future use
+```
+
+The writer starts with a placeholder header, streams row blocks, then writes
+metadata and indexes at the end. Finally it seeks back to byte zero and fills
+in the offsets and sizes.
+
+### B: Row-Major Data Blocks
+
+Each block contains neighboring row payloads:
+
+```text
+uncompressed block:
+  R0 | R1 | R2 | ...
+
+compressed block:
+  LZAV(R0 | R1 | R2 | ...)
+```
+
+The block codec is identified by a small integer in the block index:
+
+```text
+0 none
+1 lzav_default
+2 lzav_hi
+```
+
+This is the core row-major training optimization. Random-block training can
+choose a block/window, read one compact region, then feed rows sequentially
+from that decompressed block.
+
+### M: Metadata
+
+`M` is one file-level JSON object, not one metadata object per row. It contains
+the global dataset description and storage settings:
+
+```json
+{
+  "format": "RowPack",
+  "format_version": "0.1",
+  "storage": "row-major",
+  "compression": "lzav_hi",
+  "block_codec": "lzav_hi",
+  "observed_compressions": ["lzav_hi"],
+  "payload_format": "cista",
+  "rows_per_block": 64,
+  "row_count": 2118,
+  "block_count": 34,
+  "row_names": ["row_00000000", "..."],
+  "aliases": {}
+}
+```
+
+This is also where dataset-level schema, descriptions, sensor metadata,
+calibration, codec settings, document/search indexes, and alias history belong.
+Row-specific image/file details live inside the row payload itself.
+
+### BI: Block Index
+
+`BI` has one fixed-size 48-byte record per block:
+
+```text
+start_row          8 bytes   first row id in this block
+row_count          8 bytes   number of rows in this block
+offset             8 bytes   file offset where block payload starts
+size               8 bytes   compressed size on disk
+uncompressed_size  8 bytes   size after decompression
+codec              4 bytes   0 none, 1 lzav_default, 2 lzav_hi
+reserved           4 bytes   future use
+```
+
+### RI: Row Index
+
+`RI` has one fixed-size 24-byte record per row:
+
+```text
+offset       8 bytes
+size         8 bytes
+block_id     4 bytes
+row_in_block 4 bytes
+```
+
+The meaning of `offset` depends on whether the block is compressed:
+
+```text
+uncompressed block:
+  offset = absolute file offset of this row payload
+
+compressed block:
+  offset = byte offset inside the decompressed block payload
+```
+
+To read row `N`, the reader uses `RI[N]` to find the block and row slice, uses
+`BI[block_id]` to read and optionally decompress the block, then decodes the
+row payload as JSON or CISTA.
+
+### R: Row Payload
+
+Rows are byte payloads addressed by `RI`. The row index stores the payload
+offset and byte size; the row's interpretation comes from the file-level
+`payload_format` plus row/image/file metadata.
+
+In `payload_format=json`, a row is:
+
+```text
+row_prefix:
+  json_size             4 bytes
+  binary_payload_count  4 bytes
+  row_id                8 bytes
+
+binary_lengths:
+  8 bytes per image/file/blob
+
+json_bytes:
+  ordinary row fields plus metadata for binary payloads
+
+binary_payloads:
+  raw image/file/blob bytes
+```
+
+Images and files are not base64 encoded in JSON mode. The JSON section carries
+the structured fields and metadata; the large byte buffers are stored directly
+after it.
+
+In `payload_format=cista`, a row is a CISTA serialized native structure:
+
+```cpp
+Row {
+  uint64_t row_id;
+  string extra_json;
+  vector<Turn> data;
+  vector<Image> images;
+}
+```
+
+`Turn` stores `role`, `modality`, and `data`. `Image` stores `bytes`, `height`,
+`width`, `channels`, and `storage`. CISTA offset containers carry the lengths
+and offsets for variable-length strings and byte arrays, so RowPack does not
+guess dtype from byte count. For richer tensor-style rows, the intended path is
+an explicit schema in file metadata, such as field name, dtype, shape, units,
+codec, and semantic meaning.
 
 ## Benchmark
 
